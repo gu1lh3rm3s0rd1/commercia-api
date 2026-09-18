@@ -47,6 +47,8 @@ def seed() -> None:
         for code, name in (
             ("users.manage", "Gerenciar usuários"),
             ("products.edit", "Gerenciar catálogo (categorias/produtos/preços/estoque)"),
+            ("clients.edit", "Gerenciar clientes"),
+            ("orders.manage", "Gerenciar vendas"),
         ):
             perm = db.execute(select(Permission).where(Permission.code == code)).scalar_one_or_none()
             if perm is None:

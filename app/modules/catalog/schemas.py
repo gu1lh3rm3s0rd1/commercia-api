@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import RecordStatus
 
@@ -64,10 +64,10 @@ class ProductCreate(BaseModel):
     brand: str | None = None
     barcode: str | None = None
     category_id: int
-    weight: Decimal | None = None
-    height: Decimal | None = None
-    width: Decimal | None = None
-    depth: Decimal | None = None
+    weight: Decimal | None = Field(default=None, ge=0)
+    height: Decimal | None = Field(default=None, ge=0)
+    width: Decimal | None = Field(default=None, ge=0)
+    depth: Decimal | None = Field(default=None, ge=0)
 
 
 class ProductUpdate(BaseModel):
@@ -80,10 +80,10 @@ class ProductUpdate(BaseModel):
     brand: str | None = None
     barcode: str | None = None
     category_id: int | None = None
-    weight: Decimal | None = None
-    height: Decimal | None = None
-    width: Decimal | None = None
-    depth: Decimal | None = None
+    weight: Decimal | None = Field(default=None, ge=0)
+    height: Decimal | None = Field(default=None, ge=0)
+    width: Decimal | None = Field(default=None, ge=0)
+    depth: Decimal | None = Field(default=None, ge=0)
 
 
 class ProductRead(ORMModel):
@@ -107,7 +107,7 @@ class ProductRead(ORMModel):
 
 
 class ProductCostSet(BaseModel):
-    cost_value: Decimal
+    cost_value: Decimal = Field(ge=0)
 
 
 class ProductCostRead(ORMModel):
@@ -120,10 +120,20 @@ class ProductCostRead(ORMModel):
 
 
 class PriceSet(BaseModel):
-    price_default: Decimal
-    price_offer: Decimal | None = None
+    price_default: Decimal = Field(ge=0)
+    price_offer: Decimal | None = Field(default=None, ge=0)
     start_date: date | None = None
     end_date: date | None = None
+
+    @model_validator(mode="after")
+    def _check_business_rules(self) -> "PriceSet":
+        # Mirrors the DB's own ck_prices_offer_lower / ck_prices_date_range checks —
+        # catching it here gives a clean 422 instead of an unhandled IntegrityError (500).
+        if self.price_offer is not None and self.price_offer > self.price_default:
+            raise ValueError("price_offer must not exceed price_default")
+        if self.start_date is not None and self.end_date is not None and self.end_date < self.start_date:
+            raise ValueError("end_date must not be before start_date")
+        return self
 
 
 class PriceRead(ORMModel):

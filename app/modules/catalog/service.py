@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -235,10 +235,18 @@ def set_product_cost(db: Session, product_id: int, cost_value: Decimal) -> Produ
 
 
 def get_current_price(db: Session, product_id: int) -> Price | None:
+    """The price row valid *today* — start_date <= today <= end_date (either bound may be
+    open/NULL). Checking only `end_date IS NULL` (as an earlier version of this function
+    did) would wrongly skip a row whose end_date is a real, still-future date."""
+    today = date.today()
     return (
         db.execute(
             select(Price)
-            .where(Price.product_id == product_id, Price.end_date.is_(None))
+            .where(
+                Price.product_id == product_id,
+                or_(Price.start_date.is_(None), Price.start_date <= today),
+                or_(Price.end_date.is_(None), Price.end_date >= today),
+            )
             .order_by(Price.start_date.desc(), Price.created_at.desc())
         )
         .scalars()
