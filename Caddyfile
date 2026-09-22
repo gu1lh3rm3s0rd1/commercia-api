@@ -1,0 +1,8 @@
+# Variante rápida — sem domínio, só HTTP. Serve pra publicar hoje e o time já
+# conseguir integrar via http://<ip-público-da-vm>. Trocar pela variante HTTPS
+# (ver Caddyfile.https-example) assim que tiver um domínio/subdomínio apontado
+# pro IP da VM — a API troca login/senha/token, HTTP puro não é pra ficar
+# valendo por muito tempo.
+:80 {
+    reverse_proxy api:8000
+}

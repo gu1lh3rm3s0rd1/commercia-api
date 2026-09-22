@@ -1,0 +1,12 @@
+# Variante com HTTPS de verdade — use quando tiver um domínio/subdomínio
+# (ex.: DuckDNS) apontando (registro DNS tipo A) pro IP público da VM.
+#
+# Como trocar: renomeie este arquivo para "Caddyfile" (substituindo o atual),
+# troque o domínio abaixo pelo seu, e rode `docker compose restart caddy`.
+# O Caddy obtém e renova o certificado Let's Encrypt sozinho, sem configuração
+# extra — só precisa que as portas 80 e 443 estejam liberadas (Security List
+# da Oracle + firewall do SO) e o DNS já resolvendo pro IP da VM.
+
+api.seusubdominio.duckdns.org {
+    reverse_proxy api:8000
+}
