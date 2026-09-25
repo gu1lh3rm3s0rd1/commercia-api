@@ -128,6 +128,8 @@ def create_order(
         status=OrderStatus.PENDING,
         created_by_id=created_by_id,
         filial_id=filial_id,
+        client_reference=data.client_reference,
+        occurred_at=data.occurred_at,
     )
     db.add(order)
     db.flush()  # need order.id below

@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +21,9 @@ class OrderCreate(BaseModel):
     payment_method: PaymentMethod
     discount: Decimal = Field(default=Decimal("0"), ge=0)
     items: list[OrderItemCreate] = Field(min_length=1)
+    # Only ever set by the Fase 5 mobile sync push — the online endpoint never sends these.
+    client_reference: UUID | None = None
+    occurred_at: datetime | None = None
 
 
 class OrderItemRead(ORMModel):
@@ -40,6 +44,8 @@ class OrderRead(ORMModel):
     discount: Decimal
     payment_method: PaymentMethod
     status: OrderStatus
+    client_reference: UUID | None
+    occurred_at: datetime | None
     created_at: datetime
     updated_at: datetime
     items: list[OrderItemRead] = []

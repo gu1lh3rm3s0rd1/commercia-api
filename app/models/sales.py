@@ -1,7 +1,8 @@
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Computed, ForeignKey, Numeric, String
+from sqlalchemy import CheckConstraint, Computed, ForeignKey, Numeric, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -47,7 +48,14 @@ class ClientAddress(Base):
 
 class Order(Base):
     """total is a snapshot already net of discount (SUM(order_items.total) - discount).
-    The application must recalculate it whenever items change — never edited by hand."""
+    The application must recalculate it whenever items change — never edited by hand.
+
+    client_reference/occurred_at are only ever set by the mobile sync push (Fase 5):
+    client_reference is the idempotency key (a UUID the app generates offline) that lets
+    a resent batch not create a duplicate sale; occurred_at is when the sale actually
+    happened offline, as opposed to created_at (when the row was written/synced). Both
+    stay NULL for orders created through the regular online endpoint, where created_at
+    already IS the occurrence time."""
 
     __tablename__ = "orders"
     __table_args__ = (
@@ -65,6 +73,8 @@ class Order(Base):
     )
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     filial_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+    client_reference: Mapped[uuid.UUID | None] = mapped_column(Uuid, unique=True, default=None)
+    occurred_at: Mapped[datetime | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 

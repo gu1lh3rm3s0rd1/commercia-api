@@ -30,6 +30,8 @@ def _to_order_read(order: Order, items: list[OrderItem]) -> OrderRead:
         discount=order.discount,
         payment_method=order.payment_method,
         status=order.status,
+        client_reference=order.client_reference,
+        occurred_at=order.occurred_at,
         created_at=order.created_at,
         updated_at=order.updated_at,
         items=[OrderItemRead.model_validate(item) for item in items],

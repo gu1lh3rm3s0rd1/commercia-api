@@ -52,6 +52,7 @@ class CategoryRead(ORMModel):
     department_id: int
     company_id: int
     created_at: datetime
+    updated_at: datetime
 
 
 # --- products ---
@@ -101,6 +102,7 @@ class ProductRead(ORMModel):
     depth: Decimal | None
     status: RecordStatus
     created_at: datetime
+    updated_at: datetime
 
 
 # --- product cost ---
