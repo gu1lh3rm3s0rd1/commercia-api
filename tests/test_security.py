@@ -9,5 +9,6 @@ def test_password_hash_roundtrip():
 
 
 def test_jwt_roundtrip():
-    token = create_access_token(subject="42")
+    token, expire_at = create_access_token(subject="42")
     assert decode_access_token(token) == "42"
+    assert expire_at is not None

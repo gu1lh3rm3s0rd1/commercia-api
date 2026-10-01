@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -24,7 +26,9 @@ def login(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return TokenResponse(access_token=create_access_token(subject=str(user.id)))
+    token, expire_at = create_access_token(subject=str(user.id))
+    expires_in = int((expire_at - datetime.now(timezone.utc)).total_seconds())
+    return TokenResponse(access_token=token, expires_in=expires_in)
 
 
 @router.get("/me", response_model=UserRead)

@@ -13,7 +13,10 @@ def test_login_and_me(client):
         data={"username": "admin", "password": "admin123"},
     )
     assert response.status_code == 200
-    token = response.json()["access_token"]
+    body = response.json()
+    token = body["access_token"]
+    assert body["token_type"] == "bearer"
+    assert body["expires_in"] > 0
 
     me_response = client.get(
         "/api/v1/auth/me",

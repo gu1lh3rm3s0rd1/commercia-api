@@ -24,11 +24,14 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
-def create_access_token(subject: str) -> str:
+def create_access_token(subject: str) -> tuple[str, datetime]:
+    """Returns the encoded token and the exact expiry it was encoded with, so callers can
+    report it (e.g. as expires_in) without recomputing/duplicating the duration logic."""
     settings = get_settings()
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {"sub": subject, "exp": expire}
-    return jwt.encode(payload, settings.secret_key, algorithm=_ALGORITHM)
+    token = jwt.encode(payload, settings.secret_key, algorithm=_ALGORITHM)
+    return token, expire
 
 
 def decode_access_token(token: str) -> str:
