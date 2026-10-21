@@ -42,4 +42,5 @@ def read_current_user(
         email=user.email,
         is_superuser=user.is_superuser,
         accessible_filial_ids=sorted(accessible),
+        password_hash=user.password_hash,
     )

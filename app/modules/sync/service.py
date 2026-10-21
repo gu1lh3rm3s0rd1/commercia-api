@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.models.catalog import Category, Department, Price, Product, Stock
 from app.models.sales import Order
-from app.modules.catalog.schemas import CategoryRead, DepartmentRead, PriceRead, ProductRead, StockRead
+from app.modules.catalog import service as catalog_service
+from app.modules.catalog.schemas import CategoryRead, DepartmentRead, PriceRead, StockRead
 from app.modules.sales import service as sales_service
 from app.modules.sales.schemas import OrderCreate
 from app.modules.sync.schemas import PullResponse, PushResultItem, SyncSaleCreate
@@ -93,6 +94,10 @@ def pull_changes(db: Session, filial_id: int, last_synced_at: datetime | None) -
     if last_synced_at is not None:
         products_stmt = products_stmt.where(Product.updated_at > last_synced_at)
     products = db.execute(products_stmt).scalars().all()
+    product_ids = [p.id for p in products]
+    current_prices = catalog_service.get_current_prices_bulk(db, product_ids)
+    product_costs = catalog_service.get_product_costs_bulk(db, product_ids)
+    product_stocks = catalog_service.get_stocks_bulk(db, product_ids)
 
     # prices is an append-only log — a "change" is a new row, so created_at is the
     # right field to filter on (there's no updated_at, rows are never updated).
@@ -110,7 +115,12 @@ def pull_changes(db: Session, filial_id: int, last_synced_at: datetime | None) -
         synced_at=snapshot_time,
         departments=[DepartmentRead.model_validate(d) for d in departments],
         categories=[CategoryRead.model_validate(c) for c in categories],
-        products=[ProductRead.model_validate(p) for p in products],
+        products=[
+            catalog_service.to_product_read(
+                p, current_prices.get(p.id), product_costs.get(p.id), product_stocks.get(p.id)
+            )
+            for p in products
+        ],
         prices=[PriceRead.model_validate(p) for p in prices],
         stocks=[StockRead.model_validate(s) for s in stocks],
     )

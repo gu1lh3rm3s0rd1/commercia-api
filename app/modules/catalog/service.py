@@ -9,7 +9,14 @@ from sqlalchemy.orm import Session
 from app.models.catalog import Category, Department, Price, Product, ProductCost, Stock
 from app.models.enums import RecordStatus, StockMovementReason
 from app.models.sales import StockMovement
-from app.modules.catalog.schemas import ProductCreate, ProductUpdate
+from app.modules.catalog.schemas import (
+    ProductCostRead,
+    ProductCreate,
+    ProductRead,
+    ProductUpdate,
+    PriceRead,
+    StockRead,
+)
 
 # ---------------------------------------------------------------------
 # shared helpers
@@ -136,6 +143,38 @@ def list_products(
     return list(items), total
 
 
+def to_product_read(
+    product: Product, price: Price | None, cost: ProductCost | None, stock: Stock | None
+) -> ProductRead:
+    """Builds the full ProductRead, embedding current price/cost/stock. stock always comes
+    through (quantity=0 synthetic row if none exists yet) — same fallback GET .../stock
+    already uses; price/cost stay null when nothing has been set."""
+    return ProductRead(
+        id=product.id,
+        sku=product.sku,
+        name=product.name,
+        description=product.description,
+        brand=product.brand,
+        barcode=product.barcode,
+        category_id=product.category_id,
+        filial_id=product.filial_id,
+        weight=product.weight,
+        height=product.height,
+        width=product.width,
+        depth=product.depth,
+        status=product.status,
+        created_at=product.created_at,
+        updated_at=product.updated_at,
+        current_price=PriceRead.model_validate(price) if price is not None else None,
+        cost=ProductCostRead.model_validate(cost) if cost is not None else None,
+        stock=(
+            StockRead.model_validate(stock)
+            if stock is not None
+            else StockRead(product_id=product.id, filial_id=product.filial_id, quantity=0)
+        ),
+    )
+
+
 def _validate_category_for_filial(db: Session, category_id: int, filial_id: int) -> None:
     category = db.get(Category, category_id)
     if category is None:
@@ -217,6 +256,13 @@ def get_product_cost(db: Session, product_id: int) -> ProductCost | None:
     ).scalar_one_or_none()
 
 
+def get_product_costs_bulk(db: Session, product_ids: list[int]) -> dict[int, ProductCost]:
+    if not product_ids:
+        return {}
+    rows = db.execute(select(ProductCost).where(ProductCost.product_id.in_(product_ids))).scalars().all()
+    return {cost.product_id: cost for cost in rows}
+
+
 def set_product_cost(db: Session, product_id: int, cost_value: Decimal) -> ProductCost:
     cost = get_product_cost(db, product_id)
     if cost is None:
@@ -252,6 +298,33 @@ def get_current_price(db: Session, product_id: int) -> Price | None:
         .scalars()
         .first()
     )
+
+
+def get_current_prices_bulk(db: Session, product_ids: list[int]) -> dict[int, Price]:
+    """Same validity rule as get_current_price, batched into one query to avoid N+1 when
+    building a page of products. If more than one row is still valid for a product (should
+    not normally happen, set_price always closes the previous one), the most recently
+    started one wins — same tiebreak as the single-product lookup."""
+    if not product_ids:
+        return {}
+    today = date.today()
+    rows = (
+        db.execute(
+            select(Price)
+            .where(
+                Price.product_id.in_(product_ids),
+                or_(Price.start_date.is_(None), Price.start_date <= today),
+                or_(Price.end_date.is_(None), Price.end_date >= today),
+            )
+            .order_by(Price.product_id, Price.start_date.desc(), Price.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    result: dict[int, Price] = {}
+    for price in rows:
+        result.setdefault(price.product_id, price)
+    return result
 
 
 def set_price(
@@ -291,6 +364,15 @@ def get_stock(db: Session, product: Product) -> Stock | None:
     return db.execute(
         select(Stock).where(Stock.product_id == product.id, Stock.filial_id == product.filial_id)
     ).scalar_one_or_none()
+
+
+def get_stocks_bulk(db: Session, product_ids: list[int]) -> dict[int, Stock]:
+    """Filtering by product_id alone is enough — adjust_stock always writes Stock.filial_id
+    equal to the product's own filial_id, so there is at most one row per product_id."""
+    if not product_ids:
+        return {}
+    rows = db.execute(select(Stock).where(Stock.product_id.in_(product_ids))).scalars().all()
+    return {stock.product_id: stock for stock in rows}
 
 
 def adjust_stock(

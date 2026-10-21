@@ -139,6 +139,85 @@ def test_product_full_flow(client, admin_headers):
     assert delete_resp.json()["status"] == "inactive"
 
 
+def test_product_read_embeds_current_price_cost_and_stock(client, admin_headers):
+    filial_id = _admin_filial_id(client, admin_headers)
+    department_id = _create_department(client, admin_headers)
+    category_id = _create_category(client, admin_headers, filial_id, department_id)
+
+    # Name forced to sort first alphabetically ("!" sorts before letters/digits in the
+    # DB's collation) — this dev DB has no test-DB isolation and has accumulated hundreds
+    # of products across sessions (well past the route's limit=200 cap), so the list
+    # assertion below would otherwise be at the mercy of where our product lands.
+    create_resp = client.post(
+        f"/api/v1/catalog/products?filial_id={filial_id}",
+        json={"sku": _unique("SKU"), "name": f"!{_unique('produto-embutido')}", "category_id": category_id},
+        headers=admin_headers,
+    )
+    assert create_resp.status_code == 201
+    product = create_resp.json()
+    product_id = product["id"]
+    # Fresh product: no price/cost set yet, stock defaults to the same zero-quantity
+    # synthetic row GET .../stock already returns.
+    assert product["current_price"] is None
+    assert product["cost"] is None
+    assert product["stock"] == {
+        "product_id": product_id,
+        "filial_id": filial_id,
+        "quantity": 0,
+        "updated_at": None,
+    }
+
+    client.post(
+        f"/api/v1/catalog/products/{product_id}/prices",
+        json={"price_default": "19.90"},
+        headers=admin_headers,
+    )
+    client.put(
+        f"/api/v1/catalog/products/{product_id}/cost",
+        json={"cost_value": "9.50"},
+        headers=admin_headers,
+    )
+    client.post(
+        f"/api/v1/catalog/products/{product_id}/stock/adjustments",
+        json={"quantity_delta": 10, "reason": "restock"},
+        headers=admin_headers,
+    )
+
+    get_resp = client.get(f"/api/v1/catalog/products/{product_id}", headers=admin_headers)
+    assert get_resp.status_code == 200
+    got = get_resp.json()
+    assert Decimal(str(got["current_price"]["price_default"])) == Decimal("19.90")
+    assert Decimal(str(got["cost"]["cost_value"])) == Decimal("9.50")
+    assert got["stock"]["quantity"] == 10
+
+    # same embedded data must show up in the paginated list (the batched/N+1-safe path)
+    list_resp = client.get(
+        f"/api/v1/catalog/products?filial_id={filial_id}&limit=5", headers=admin_headers
+    )
+    assert list_resp.status_code == 200
+    listed = next(p for p in list_resp.json()["items"] if p["id"] == product_id)
+    assert Decimal(str(listed["current_price"]["price_default"])) == Decimal("19.90")
+    assert Decimal(str(listed["cost"]["cost_value"])) == Decimal("9.50")
+    assert listed["stock"]["quantity"] == 10
+
+    # PATCH and DELETE (deactivate) responses keep carrying the same embedded data
+    patch_resp = client.patch(
+        f"/api/v1/catalog/products/{product_id}", json={"name": "Produto renomeado"}, headers=admin_headers
+    )
+    assert patch_resp.status_code == 200
+    patched = patch_resp.json()
+    assert patched["name"] == "Produto renomeado"
+    assert patched["stock"]["quantity"] == 10
+    assert Decimal(str(patched["current_price"]["price_default"])) == Decimal("19.90")
+
+    delete_resp = client.delete(f"/api/v1/catalog/products/{product_id}", headers=admin_headers)
+    assert delete_resp.status_code == 200
+    deleted = delete_resp.json()
+    assert deleted["status"] == "inactive"
+    assert deleted["stock"]["quantity"] == 10
+    assert Decimal(str(deleted["cost"]["cost_value"])) == Decimal("9.50")
+
+
 def test_write_endpoints_require_auth(client):
     resp = client.post("/api/v1/catalog/departments", json={"name": "x"})
     assert resp.status_code == 401

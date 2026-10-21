@@ -137,7 +137,14 @@ def list_products(
 ) -> Page[ProductRead]:
     filial_ids = {filial_id} if filial_id is not None else accessible
     items, total = service.list_products(db, filial_ids, limit, offset)
-    return Page(items=items, total=total, limit=limit, offset=offset)
+    product_ids = [p.id for p in items]
+    prices = service.get_current_prices_bulk(db, product_ids)
+    costs = service.get_product_costs_bulk(db, product_ids)
+    stocks = service.get_stocks_bulk(db, product_ids)
+    page_items = [
+        service.to_product_read(p, prices.get(p.id), costs.get(p.id), stocks.get(p.id)) for p in items
+    ]
+    return Page(items=page_items, total=total, limit=limit, offset=offset)
 
 
 @router.post(
@@ -152,7 +159,9 @@ def create_product(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ProductRead:
-    return service.create_product(db, filial_id, user.id, data)
+    product = service.create_product(db, filial_id, user.id, data)
+    # A brand-new product never has a price/cost/stock yet — no need to query for them.
+    return service.to_product_read(product, None, None, None)
 
 
 @router.get("/products/{product_id}", response_model=ProductRead)
@@ -164,7 +173,10 @@ def get_product(
 ) -> ProductRead:
     product = service.get_product_or_404(db, product_id)
     service.ensure_filial_access(product.filial_id, accessible)
-    return product
+    price = service.get_current_price(db, product_id)
+    cost = service.get_product_cost(db, product_id)
+    stock = service.get_stock(db, product)
+    return service.to_product_read(product, price, cost, stock)
 
 
 @router.patch(
@@ -178,7 +190,11 @@ def update_product(
 ) -> ProductRead:
     product = service.get_product_or_404(db, product_id)
     service.ensure_filial_access(product.filial_id, accessible)
-    return service.update_product(db, product, data)
+    product = service.update_product(db, product, data)
+    price = service.get_current_price(db, product_id)
+    cost = service.get_product_cost(db, product_id)
+    stock = service.get_stock(db, product)
+    return service.to_product_read(product, price, cost, stock)
 
 
 @router.delete(
@@ -193,7 +209,11 @@ def deactivate_product(
     historical sales data and are never hard-deleted."""
     product = service.get_product_or_404(db, product_id)
     service.ensure_filial_access(product.filial_id, accessible)
-    return service.deactivate_product(db, product)
+    product = service.deactivate_product(db, product)
+    price = service.get_current_price(db, product_id)
+    cost = service.get_product_cost(db, product_id)
+    stock = service.get_stock(db, product)
+    return service.to_product_read(product, price, cost, stock)
 
 
 # ---------------------------------------------------------------------

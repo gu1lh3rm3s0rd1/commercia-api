@@ -55,56 +55,6 @@ class CategoryRead(ORMModel):
     updated_at: datetime
 
 
-# --- products ---
-
-
-class ProductCreate(BaseModel):
-    sku: str
-    name: str
-    description: str | None = None
-    brand: str | None = None
-    barcode: str | None = None
-    category_id: int
-    weight: Decimal | None = Field(default=None, ge=0)
-    height: Decimal | None = Field(default=None, ge=0)
-    width: Decimal | None = Field(default=None, ge=0)
-    depth: Decimal | None = Field(default=None, ge=0)
-
-
-class ProductUpdate(BaseModel):
-    """Partial update. Fields left as None are not changed — there is currently no way
-    to explicitly clear an optional field (e.g. barcode) back to null via this endpoint;
-    acceptable simplification for now, revisit if that becomes a real need."""
-
-    name: str | None = None
-    description: str | None = None
-    brand: str | None = None
-    barcode: str | None = None
-    category_id: int | None = None
-    weight: Decimal | None = Field(default=None, ge=0)
-    height: Decimal | None = Field(default=None, ge=0)
-    width: Decimal | None = Field(default=None, ge=0)
-    depth: Decimal | None = Field(default=None, ge=0)
-
-
-class ProductRead(ORMModel):
-    id: int
-    sku: str
-    name: str
-    description: str | None
-    brand: str | None
-    barcode: str | None
-    category_id: int
-    filial_id: int
-    weight: Decimal | None
-    height: Decimal | None
-    width: Decimal | None
-    depth: Decimal | None
-    status: RecordStatus
-    created_at: datetime
-    updated_at: datetime
-
-
 # --- product cost ---
 
 
@@ -172,3 +122,59 @@ class StockRead(ORMModel):
     filial_id: int
     quantity: int
     updated_at: datetime | None = None
+
+
+# --- products ---
+
+
+class ProductCreate(BaseModel):
+    sku: str
+    name: str
+    description: str | None = None
+    brand: str | None = None
+    barcode: str | None = None
+    category_id: int
+    weight: Decimal | None = Field(default=None, ge=0)
+    height: Decimal | None = Field(default=None, ge=0)
+    width: Decimal | None = Field(default=None, ge=0)
+    depth: Decimal | None = Field(default=None, ge=0)
+
+
+class ProductUpdate(BaseModel):
+    """Partial update. Fields left as None are not changed — there is currently no way
+    to explicitly clear an optional field (e.g. barcode) back to null via this endpoint;
+    acceptable simplification for now, revisit if that becomes a real need."""
+
+    name: str | None = None
+    description: str | None = None
+    brand: str | None = None
+    barcode: str | None = None
+    category_id: int | None = None
+    weight: Decimal | None = Field(default=None, ge=0)
+    height: Decimal | None = Field(default=None, ge=0)
+    width: Decimal | None = Field(default=None, ge=0)
+    depth: Decimal | None = Field(default=None, ge=0)
+
+
+class ProductRead(ORMModel):
+    id: int
+    sku: str
+    name: str
+    description: str | None
+    brand: str | None
+    barcode: str | None
+    category_id: int
+    filial_id: int
+    weight: Decimal | None
+    height: Decimal | None
+    width: Decimal | None
+    depth: Decimal | None
+    status: RecordStatus
+    created_at: datetime
+    updated_at: datetime
+    # Convenience copies of data already exposed by their own dedicated endpoints
+    # (.../prices/current, .../cost, .../stock) — those keep working unchanged, this just
+    # saves callers (mobile sync included) from 3 extra round-trips per product.
+    current_price: PriceRead | None = None
+    cost: ProductCostRead | None = None
+    stock: StockRead

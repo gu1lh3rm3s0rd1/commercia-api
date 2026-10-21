@@ -205,11 +205,17 @@ def test_push_batch_processes_each_sale_independently(client, admin_headers):
 def test_pull_without_last_synced_at_returns_full_catalog(client, admin_headers):
     filial_id = _admin_filial_id(client, admin_headers)
     product_id = _make_stocked_product(client, admin_headers, filial_id, "7.00", qty=5)
+    client.put(
+        f"/api/v1/catalog/products/{product_id}/cost", json={"cost_value": "3.00"}, headers=admin_headers
+    )
 
     resp = client.get(f"/api/v1/sync/pull?filial_id={filial_id}", headers=admin_headers)
     assert resp.status_code == 200
     body = resp.json()
-    assert any(p["id"] == product_id for p in body["products"])
+    pulled = next(p for p in body["products"] if p["id"] == product_id)
+    assert Decimal(str(pulled["current_price"]["price_default"])) == Decimal("7.00")
+    assert Decimal(str(pulled["cost"]["cost_value"])) == Decimal("3.00")
+    assert pulled["stock"]["quantity"] == 5
     assert "synced_at" in body
 
 

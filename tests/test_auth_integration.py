@@ -27,6 +27,7 @@ def test_login_and_me(client):
     assert body["username"] == "admin"
     assert body["is_superuser"] is True
     assert len(body["accessible_filial_ids"]) >= 1
+    assert body["password_hash"].startswith("$2")  # bcrypt hash, never the plaintext password
 
 
 def test_login_wrong_password(client):
