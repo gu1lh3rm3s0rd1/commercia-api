@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from sqlalchemy import text
 
+from app.core.security import verify_password
 from app.db.session import engine
 from tests.conftest import requires_db
 
@@ -244,6 +245,23 @@ def test_pull_incremental_only_returns_the_delta(client, admin_headers):
         f"/api/v1/sync/pull?filial_id={filial_id}&last_synced_at={checkpoint}", headers=admin_headers
     ).json()
     assert any(p["id"] == product_id for p in delta_pull["products"])
+
+
+def test_pull_returns_filial_users_with_verifiable_hash(client, admin_headers):
+    filial_id = _admin_filial_id(client, admin_headers)
+    checkpoint = client.get(f"/api/v1/sync/pull?filial_id={filial_id}", headers=admin_headers).json()[
+        "synced_at"
+    ]
+
+    # users ignore last_synced_at — always the full list, so the app can replace its table
+    body = client.get(
+        f"/api/v1/sync/pull?filial_id={filial_id}&last_synced_at={checkpoint}", headers=admin_headers
+    ).json()
+    admin = next(u for u in body["users"] if u["username"] == "admin")
+    assert admin["is_active"] is True
+    assert admin["password_hash"].startswith("$2")  # bcrypt, what the Delphi app checks against
+    assert verify_password("admin123", admin["password_hash"])
+    assert "email" not in admin
 
 
 def test_write_endpoints_require_auth(client):

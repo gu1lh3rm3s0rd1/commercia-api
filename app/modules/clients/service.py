@@ -22,7 +22,7 @@ def _duplicate_client(db: Session, cpf: str, email: str, exclude_id: int | None 
 def list_clients(db: Session, filial_ids: set[int], limit: int, offset: int) -> tuple[list[Client], int]:
     base = select(Client).where(Client.filial_id.in_(filial_ids))
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    items = db.execute(base.order_by(Client.first_name, Client.last_name).limit(limit).offset(offset)).scalars().all()
+    items = db.execute(base.order_by(Client.first_name, Client.last_name, Client.id).limit(limit).offset(offset)).scalars().all()
     return list(items), total
 
 

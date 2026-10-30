@@ -48,6 +48,20 @@ class PushResponse(BaseModel):
 # ---------------------------------------------------------------------
 
 
+class SyncUserRead(BaseModel):
+    """What the mobile app needs to log a user in offline: it runs bcrypt's checkpw on
+    the typed password against password_hash (the salt lives inside the hash itself, so
+    no extra field is needed). Inactive users are sent too so the app can block them."""
+
+    model_config = {"from_attributes": True}
+
+    id: int
+    username: str
+    password_hash: str
+    is_active: bool
+    is_superuser: bool
+
+
 class PullResponse(BaseModel):
     synced_at: datetime
     departments: list[DepartmentRead]
@@ -55,3 +69,7 @@ class PullResponse(BaseModel):
     products: list[ProductRead]
     prices: list[PriceRead]
     stocks: list[StockRead]
+    # Always the FULL list for the filial, ignoring last_synced_at: users has no
+    # updated_at, and a user losing access to the filial is a deleted user_companies row,
+    # which an incremental pull could never express. The app replaces its local table.
+    users: list[SyncUserRead]

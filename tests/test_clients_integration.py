@@ -27,6 +27,19 @@ def _admin_filial_id(client, admin_headers) -> int:
     return me["accessible_filial_ids"][0]
 
 
+def _list_contains(client, admin_headers, url: str, client_id: int) -> bool:
+    """Walks every page — the listing is ordered by name, and re-runs against the real
+    dev DB pile up clients with the same name, so the new one can land on any page."""
+    offset = 0
+    while True:
+        page = client.get(f"{url}&limit=200&offset={offset}", headers=admin_headers).json()
+        if any(c["id"] == client_id for c in page["items"]):
+            return True
+        offset += page["limit"]
+        if offset >= page["total"]:
+            return False
+
+
 def test_client_full_flow(client, admin_headers):
     filial_id = _admin_filial_id(client, admin_headers)
 
@@ -50,7 +63,7 @@ def test_client_full_flow(client, admin_headers):
 
     list_resp = client.get(f"/api/v1/clients?filial_id={filial_id}", headers=admin_headers)
     assert list_resp.status_code == 200
-    assert any(c["id"] == client_id for c in list_resp.json()["items"])
+    assert _list_contains(client, admin_headers, f"/api/v1/clients?filial_id={filial_id}", client_id)
 
     update_resp = client.patch(
         f"/api/v1/clients/{client_id}", json={"phone": "11999999999"}, headers=admin_headers

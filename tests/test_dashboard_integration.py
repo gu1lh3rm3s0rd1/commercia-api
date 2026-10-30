@@ -491,12 +491,20 @@ def test_stale_products_includes_never_sold_excludes_recently_sold(client, admin
     client_id = _make_client(client, admin_headers, filial_id)
     _place_order(client, admin_headers, filial_id, client_id, recently_sold_id, qty=1)
 
-    resp = client.get(
-        f"/api/v1/dashboard/reports/stale-products?filial_id={filial_id}&days=1&limit=200",
-        headers=admin_headers,
-    )
-    assert resp.status_code == 200
-    items = resp.json()["items"]
+    # walk every page: never-sold products sort first (nulls_first) and re-runs against
+    # the real dev DB pile up hundreds of them, so ours can land past the first page
+    items, offset = [], 0
+    while True:
+        resp = client.get(
+            f"/api/v1/dashboard/reports/stale-products?filial_id={filial_id}&days=1&limit=200&offset={offset}",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        page = resp.json()
+        items += page["items"]
+        offset += page["limit"]
+        if offset >= page["total"]:
+            break
     product_ids = {it["product_id"] for it in items}
     assert recently_sold_id not in product_ids
 
@@ -536,12 +544,20 @@ def test_inactive_clients_includes_no_orders_excludes_recent_order(client, admin
     recently_ordered_id = _make_client(client, admin_headers, filial_id)
     _place_order(client, admin_headers, filial_id, recently_ordered_id, product_id, qty=1)
 
-    resp = client.get(
-        f"/api/v1/dashboard/reports/inactive-clients?filial_id={filial_id}&days=1&limit=200",
-        headers=admin_headers,
-    )
-    assert resp.status_code == 200
-    items = resp.json()["items"]
+    # walk every page: never-ordered clients sort first (nulls_first) and re-runs against
+    # the real dev DB pile up hundreds of them, so ours can land past the first page
+    items, offset = [], 0
+    while True:
+        resp = client.get(
+            f"/api/v1/dashboard/reports/inactive-clients?filial_id={filial_id}&days=1&limit=200&offset={offset}",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        page = resp.json()
+        items += page["items"]
+        offset += page["limit"]
+        if offset >= page["total"]:
+            break
     client_ids = {it["client_id"] for it in items}
     assert recently_ordered_id not in client_ids
 

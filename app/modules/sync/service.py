@@ -1,17 +1,18 @@
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Category, Department, Price, Product, Stock
 from app.models.sales import Order
+from app.models.user import User, UserCompany
 from app.modules.catalog import service as catalog_service
 from app.modules.catalog.schemas import CategoryRead, DepartmentRead, PriceRead, StockRead
 from app.modules.sales import service as sales_service
 from app.modules.sales.schemas import OrderCreate
-from app.modules.sync.schemas import PullResponse, PushResultItem, SyncSaleCreate
+from app.modules.sync.schemas import PullResponse, PushResultItem, SyncSaleCreate, SyncUserRead
 
 # ---------------------------------------------------------------------
 # push
@@ -111,6 +112,20 @@ def pull_changes(db: Session, filial_id: int, last_synced_at: datetime | None) -
         stocks_stmt = stocks_stmt.where(Stock.updated_at > last_synced_at)
     stocks = db.execute(stocks_stmt).scalars().all()
 
+    # Same rule as get_accessible_filial_ids: a superuser reaches every filial without a
+    # user_companies row, so they must be able to log in offline on any store's device.
+    users_stmt = (
+        select(User)
+        .where(
+            or_(
+                User.is_superuser.is_(True),
+                User.id.in_(select(UserCompany.user_id).where(UserCompany.filial_id == filial_id)),
+            )
+        )
+        .order_by(User.id)
+    )
+    users = db.execute(users_stmt).scalars().all()
+
     return PullResponse(
         synced_at=snapshot_time,
         departments=[DepartmentRead.model_validate(d) for d in departments],
@@ -123,4 +138,5 @@ def pull_changes(db: Session, filial_id: int, last_synced_at: datetime | None) -
         ],
         prices=[PriceRead.model_validate(p) for p in prices],
         stocks=[StockRead.model_validate(s) for s in stocks],
+        users=[SyncUserRead.model_validate(u) for u in users],
     )

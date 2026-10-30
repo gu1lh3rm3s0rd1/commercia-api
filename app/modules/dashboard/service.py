@@ -234,7 +234,7 @@ def get_sales_by_client(
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
 
-    rows = db.execute(base.order_by(total_revenue_col.desc()).limit(limit).offset(offset)).all()
+    rows = db.execute(base.order_by(total_revenue_col.desc(), Client.id).limit(limit).offset(offset)).all()
 
     items = []
     for client_id, first_name, last_name, total_orders, total_revenue in rows:
@@ -307,7 +307,7 @@ def get_sales_by_category(
     )
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    rows = db.execute(base.order_by(revenue_col.desc()).limit(limit).offset(offset)).all()
+    rows = db.execute(base.order_by(revenue_col.desc(), Category.id).limit(limit).offset(offset)).all()
 
     items = [
         SalesByCategoryItem(
@@ -354,7 +354,7 @@ def get_top_products(
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
 
     sort_col = quantity_col if sort_by == "quantity" else revenue_col
-    rows = db.execute(base.order_by(sort_col.desc()).limit(limit).offset(offset)).all()
+    rows = db.execute(base.order_by(sort_col.desc(), Product.id).limit(limit).offset(offset)).all()
 
     items = [
         TopProductItem(
@@ -480,7 +480,7 @@ def get_sales_by_seller(
     )
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    rows = db.execute(base.order_by(total_revenue_col.desc()).limit(limit).offset(offset)).all()
+    rows = db.execute(base.order_by(total_revenue_col.desc(), User.id).limit(limit).offset(offset)).all()
 
     items = [
         SalesBySellerItem(user_id=user_id, username=username, total_orders=total_orders, total_revenue=total_revenue)
@@ -515,7 +515,7 @@ def get_sales_by_filial(
     )
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    rows = db.execute(base.order_by(total_revenue_col.desc()).limit(limit).offset(offset)).all()
+    rows = db.execute(base.order_by(total_revenue_col.desc(), Company.id).limit(limit).offset(offset)).all()
 
     items = [
         SalesByFilialItem(
@@ -601,7 +601,7 @@ def get_margin_by_product(
     )
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    rows = db.execute(base.order_by(margin_expr.desc()).limit(limit).offset(offset)).all()
+    rows = db.execute(base.order_by(margin_expr.desc(), Product.id).limit(limit).offset(offset)).all()
 
     items = []
     for product_id, name, quantity_sold, revenue, cost in rows:
@@ -641,7 +641,7 @@ def get_low_stock(
     )
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    rows = db.execute(base.order_by(Stock.quantity.asc()).limit(limit).offset(offset)).all()
+    rows = db.execute(base.order_by(Stock.quantity.asc(), Product.id).limit(limit).offset(offset)).all()
 
     items = [LowStockItem(product_id=pid, name=name, sku=sku, quantity=qty) for pid, name, sku, qty in rows]
     return items, total
@@ -675,7 +675,7 @@ def get_stale_products(
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
     rows = db.execute(
-        base.order_by(last_sale_subq.c.last_sale_at.asc().nulls_first()).limit(limit).offset(offset)
+        base.order_by(last_sale_subq.c.last_sale_at.asc().nulls_first(), Product.id).limit(limit).offset(offset)
     ).all()
 
     now = datetime.now(timezone.utc)
@@ -747,7 +747,7 @@ def get_inactive_clients(
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
     rows = db.execute(
-        base.order_by(last_order_subq.c.last_order_at.asc().nulls_first()).limit(limit).offset(offset)
+        base.order_by(last_order_subq.c.last_order_at.asc().nulls_first(), Client.id).limit(limit).offset(offset)
     ).all()
 
     now = datetime.now(timezone.utc)

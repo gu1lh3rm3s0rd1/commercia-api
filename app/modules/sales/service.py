@@ -67,7 +67,7 @@ def list_orders(
     if status_filter is not None:
         base = base.where(Order.status == status_filter)
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    items = db.execute(base.order_by(Order.created_at.desc()).limit(limit).offset(offset)).scalars().all()
+    items = db.execute(base.order_by(Order.created_at.desc(), Order.id.desc()).limit(limit).offset(offset)).scalars().all()
     return list(items), total
 
 

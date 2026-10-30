@@ -68,7 +68,7 @@ def list_categories(
 ) -> tuple[list[Category], int]:
     base = select(Category).where(Category.company_id.in_(filial_ids))
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    items = db.execute(base.order_by(Category.name).limit(limit).offset(offset)).scalars().all()
+    items = db.execute(base.order_by(Category.name, Category.id).limit(limit).offset(offset)).scalars().all()
     return list(items), total
 
 
@@ -139,7 +139,7 @@ def list_products(
 ) -> tuple[list[Product], int]:
     base = select(Product).where(Product.filial_id.in_(filial_ids))
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
-    items = db.execute(base.order_by(Product.name).limit(limit).offset(offset)).scalars().all()
+    items = db.execute(base.order_by(Product.name, Product.id).limit(limit).offset(offset)).scalars().all()
     return list(items), total
 
 
