@@ -93,7 +93,10 @@ def create_order(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Product {product.id} has no price set for today",
             )
-        unit_price = price.price_offer if price.price_offer is not None else price.price_default
+        # price_offer == 0 means "no offer" (team convention: never null) — sell at the
+        # offer only when there is a real one, otherwise a missing offer would sell for free.
+        # `or 0` covers rows still NULL before migration 0004 is applied.
+        unit_price = price.price_offer if (price.price_offer or 0) > 0 else price.price_default
 
         cost_row = db.execute(
             select(ProductCost).where(ProductCost.product_id == product.id)

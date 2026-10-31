@@ -281,3 +281,37 @@ def test_order_referencing_nonexistent_product_rejected(client, admin_headers):
 def test_get_nonexistent_order_is_404(client, admin_headers):
     resp = client.get("/api/v1/orders/999999999", headers=admin_headers)
     assert resp.status_code == 404
+
+
+def test_order_uses_offer_only_when_greater_than_zero(client, admin_headers):
+    # price_offer == 0 means "no offer" — the sale must use price_default, never sell for free
+    filial_id = _admin_filial_id(client, admin_headers)
+    client_id = _make_client(client, admin_headers, filial_id)
+
+    no_offer_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=5)
+    client.post(
+        f"/api/v1/catalog/products/{no_offer_id}/prices",
+        json={"price_default": "10.00", "price_offer": "0.00"},
+        headers=admin_headers,
+    )
+    with_offer_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=5)
+    client.post(
+        f"/api/v1/catalog/products/{with_offer_id}/prices",
+        json={"price_default": "10.00", "price_offer": "7.00"},
+        headers=admin_headers,
+    )
+
+    order = client.post(
+        f"/api/v1/orders?filial_id={filial_id}",
+        json={
+            "client_id": client_id,
+            "payment_method": "cash",
+            "items": [{"product_id": no_offer_id, "quantity": 1}, {"product_id": with_offer_id, "quantity": 1}],
+        },
+        headers=admin_headers,
+    )
+    assert order.status_code == 201
+    unit_prices = {it["product_id"]: Decimal(str(it["unit_price"])) for it in order.json()["items"]}
+    assert unit_prices[no_offer_id] == Decimal("10.00")
+    assert unit_prices[with_offer_id] == Decimal("7.00")
+    assert Decimal(str(order.json()["total"])) == Decimal("17.00")

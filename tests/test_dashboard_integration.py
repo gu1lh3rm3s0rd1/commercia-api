@@ -15,6 +15,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+from app.core.timezone import local_today, local_tz
 from tests.conftest import requires_db
 
 pytestmark = requires_db
@@ -33,8 +34,8 @@ def _admin_filial_id(client, admin_headers) -> int:
     return me["accessible_filial_ids"][0]
 
 
-def _today_utc_iso() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+def _today_local_iso() -> str:
+    return local_today().isoformat()  # report days are business-timezone days
 
 
 def _make_stocked_product(client, admin_headers, filial_id: int, price: str, qty: int) -> int:
@@ -121,7 +122,7 @@ def test_indicators_reflect_todays_activity(client, admin_headers):
     assert after["active_products"] == before["active_products"] + 1
 
     assert len(after["last_7_days"]) == 7
-    today_str = _today_utc_iso()
+    today_str = _today_local_iso()
     today_before = next(p for p in before["last_7_days"] if p["date"] == today_str)
     today_after = next(p for p in after["last_7_days"] if p["date"] == today_str)
     assert today_after["count"] == today_before["count"] + 1
@@ -156,7 +157,7 @@ def test_sales_summary_totals_and_payment_breakdown(client, admin_headers):
     filial_id = _admin_filial_id(client, admin_headers)
     product_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=20)
     client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
 
     before = client.get(
         f"/api/v1/dashboard/reports/sales-summary?filial_id={filial_id}&start_date={today}",
@@ -207,7 +208,7 @@ def test_sales_by_client_groups_and_orders_by_revenue_desc(client, admin_headers
     product_id = _make_stocked_product(client, admin_headers, filial_id, "50.00", qty=20)
     big_client_id = _make_client(client, admin_headers, filial_id)
     small_client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
 
     _place_order(client, admin_headers, filial_id, big_client_id, product_id, qty=4)  # 200.00
     _place_order(client, admin_headers, filial_id, small_client_id, product_id, qty=1)  # 50.00
@@ -232,7 +233,7 @@ def test_sales_by_status_counts_each_status(client, admin_headers):
     filial_id = _admin_filial_id(client, admin_headers)
     product_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=10)
     client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
 
     before = client.get(
         f"/api/v1/dashboard/reports/sales-by-status?filial_id={filial_id}&start_date={today}",
@@ -288,7 +289,7 @@ def test_sales_by_category_groups_by_category(client, admin_headers):
         headers=admin_headers,
     )
     client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
 
     _place_order(client, admin_headers, filial_id, client_id, product_id, qty=3)  # 30.00
 
@@ -308,7 +309,7 @@ def test_top_products_sorts_by_requested_metric(client, admin_headers):
     cheap_high_qty = _make_stocked_product(client, admin_headers, filial_id, "5.00", qty=50)
     expensive_low_qty = _make_stocked_product(client, admin_headers, filial_id, "100.00", qty=10)
     client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
 
     _place_order(client, admin_headers, filial_id, client_id, cheap_high_qty, qty=20)  # revenue 100, qty 20
     _place_order(client, admin_headers, filial_id, client_id, expensive_low_qty, qty=1)  # revenue 100, qty 1
@@ -325,7 +326,7 @@ def test_sales_comparison_derives_previous_period_and_delta(client, admin_header
     filial_id = _admin_filial_id(client, admin_headers)
     product_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=10)
     client_id = _make_client(client, admin_headers, filial_id)
-    today = date.today()
+    today = local_today()
     url = (
         f"/api/v1/dashboard/reports/sales-comparison?filial_id={filial_id}"
         f"&start_date={today.isoformat()}&end_date={today.isoformat()}"
@@ -345,7 +346,7 @@ def test_sales_by_hour_and_weekday_reflect_new_order(client, admin_headers):
     filial_id = _admin_filial_id(client, admin_headers)
     product_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=5)
     client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
 
     before_hour = client.get(
         f"/api/v1/dashboard/reports/sales-by-hour?filial_id={filial_id}&start_date={today}&end_date={today}",
@@ -356,7 +357,7 @@ def test_sales_by_hour_and_weekday_reflect_new_order(client, admin_headers):
         headers=admin_headers,
     ).json()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(local_tz())  # buckets are business-timezone hours/weekdays
     _place_order(client, admin_headers, filial_id, client_id, product_id, qty=1)
 
     after_hour = client.get(
@@ -378,7 +379,7 @@ def test_sales_by_seller_ranks_by_revenue(client, admin_headers):
     filial_id = _admin_filial_id(client, admin_headers)
     product_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=10)
     client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
     me = client.get("/api/v1/auth/me", headers=admin_headers).json()
 
     before = client.get(
@@ -403,7 +404,7 @@ def test_sales_by_filial_lists_current_filial(client, admin_headers):
     filial_id = _admin_filial_id(client, admin_headers)
     product_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=10)
     client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
 
     before = client.get(
         f"/api/v1/dashboard/reports/sales-by-filial?start_date={today}&limit=200", headers=admin_headers
@@ -432,7 +433,7 @@ def test_margin_summary_and_by_product_use_frozen_cost_at_sale(client, admin_hea
         f"/api/v1/catalog/products/{product_id}/cost", json={"cost_value": "8.00"}, headers=admin_headers
     )
     client_id = _make_client(client, admin_headers, filial_id)
-    today = _today_utc_iso()
+    today = _today_local_iso()
 
     before_summary = client.get(
         f"/api/v1/dashboard/reports/margin-summary?filial_id={filial_id}&start_date={today}",
@@ -531,7 +532,7 @@ def test_new_clients_trend_zero_filled_and_counts_today(client, admin_headers):
     after = client.get(
         f"/api/v1/dashboard/reports/new-clients-trend?filial_id={filial_id}&days=7", headers=admin_headers
     ).json()
-    today_str = _today_utc_iso()
+    today_str = _today_local_iso()
     before_today = next(p for p in before if p["date"] == today_str)
     after_today = next(p for p in after if p["date"] == today_str)
     assert after_today["count"] == before_today["count"] + 1
@@ -588,3 +589,34 @@ def test_dashboard_endpoints_require_auth(client):
     ]
     for url in endpoints:
         assert client.get(url).status_code == 401, url
+
+
+def test_evening_sale_counts_on_its_brasilia_day_and_hour(client, admin_headers):
+    # A sale at 21:30 in Brasília is 00:30 UTC of the next day — reports must still put it
+    # on its own Brasília day, hour 21 and weekday, not on the UTC ones.
+    filial_id = _admin_filial_id(client, admin_headers)
+    product_id = _make_stocked_product(client, admin_headers, filial_id, "10.00", qty=5)
+    client_id = _make_client(client, admin_headers, filial_id)
+    day = local_today() - timedelta(days=1)
+    occurred_at = datetime(day.year, day.month, day.day, 21, 30, tzinfo=local_tz())
+    period = f"filial_id={filial_id}&start_date={day.isoformat()}&end_date={day.isoformat()}"
+
+    def counts():
+        hours = client.get(f"/api/v1/dashboard/reports/sales-by-hour?{period}", headers=admin_headers).json()
+        weekdays = client.get(f"/api/v1/dashboard/reports/sales-by-weekday?{period}", headers=admin_headers).json()
+        return hours[21]["count"], weekdays[day.weekday()]["count"]
+
+    before = counts()
+    resp = client.post(
+        f"/api/v1/sync/push?filial_id={filial_id}",
+        json={"sales": [{
+            "client_reference": str(uuid.uuid4()),
+            "client_id": client_id,
+            "payment_method": "pix",
+            "occurred_at": occurred_at.isoformat(),
+            "items": [{"product_id": product_id, "quantity": 1}],
+        }]},
+        headers=admin_headers,
+    )
+    assert resp.json()["results"][0]["status"] == "created"
+    assert counts() == (before[0] + 1, before[1] + 1)

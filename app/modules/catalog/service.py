@@ -6,10 +6,12 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.timezone import local_today
 from app.models.catalog import Category, Department, Price, Product, ProductCost, Stock
 from app.models.enums import RecordStatus, StockMovementReason
 from app.models.sales import StockMovement
 from app.modules.catalog.schemas import (
+    ZERO,
     ProductCostRead,
     ProductCreate,
     ProductRead,
@@ -148,7 +150,8 @@ def to_product_read(
 ) -> ProductRead:
     """Builds the full ProductRead, embedding current price/cost/stock. stock always comes
     through (quantity=0 synthetic row if none exists yet) — same fallback GET .../stock
-    already uses; price/cost stay null when nothing has been set."""
+    already uses; price/cost follow the same idea — a zero-valued row when nothing has
+    been set (team convention: price/cost values are 0, never null)."""
     return ProductRead(
         id=product.id,
         sku=product.sku,
@@ -165,8 +168,23 @@ def to_product_read(
         status=product.status,
         created_at=product.created_at,
         updated_at=product.updated_at,
-        current_price=PriceRead.model_validate(price) if price is not None else None,
-        cost=ProductCostRead.model_validate(cost) if cost is not None else None,
+        current_price=(
+            PriceRead.model_validate(price)
+            if price is not None
+            else PriceRead(
+                product_id=product.id,
+                filial_id=product.filial_id,
+                price_default=ZERO,
+                price_offer=ZERO,
+                start_date=None,
+                end_date=None,
+            )
+        ),
+        cost=(
+            ProductCostRead.model_validate(cost)
+            if cost is not None
+            else ProductCostRead(product_id=product.id, cost_value=ZERO)
+        ),
         stock=(
             StockRead.model_validate(stock)
             if stock is not None
@@ -284,7 +302,7 @@ def get_current_price(db: Session, product_id: int) -> Price | None:
     """The price row valid *today* — start_date <= today <= end_date (either bound may be
     open/NULL). Checking only `end_date IS NULL` (as an earlier version of this function
     did) would wrongly skip a row whose end_date is a real, still-future date."""
-    today = date.today()
+    today = local_today()
     return (
         db.execute(
             select(Price)
@@ -307,7 +325,7 @@ def get_current_prices_bulk(db: Session, product_ids: list[int]) -> dict[int, Pr
     started one wins — same tiebreak as the single-product lookup."""
     if not product_ids:
         return {}
-    today = date.today()
+    today = local_today()
     rows = (
         db.execute(
             select(Price)
@@ -331,11 +349,11 @@ def set_price(
     db: Session,
     product: Product,
     price_default: Decimal,
-    price_offer: Decimal | None,
+    price_offer: Decimal,
     start_date: date | None,
     end_date: date | None,
 ) -> Price:
-    effective_start = start_date or date.today()
+    effective_start = start_date or local_today()
 
     current = get_current_price(db, product.id)
     if current is not None:

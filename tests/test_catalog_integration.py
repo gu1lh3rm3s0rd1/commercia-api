@@ -156,10 +156,13 @@ def test_product_read_embeds_current_price_cost_and_stock(client, admin_headers)
     assert create_resp.status_code == 201
     product = create_resp.json()
     product_id = product["id"]
-    # Fresh product: no price/cost set yet, stock defaults to the same zero-quantity
-    # synthetic row GET .../stock already returns.
-    assert product["current_price"] is None
-    assert product["cost"] is None
+    # Fresh product: no price/cost set yet — zero-valued rows, never null (team convention),
+    # same idea as the zero-quantity synthetic stock row GET .../stock already returns.
+    assert Decimal(product["current_price"]["price_default"]) == 0
+    assert Decimal(product["current_price"]["price_offer"]) == 0
+    assert product["current_price"]["id"] is None
+    assert Decimal(product["cost"]["cost_value"]) == 0
+    assert product["cost"]["updated_at"] is None
     assert product["stock"] == {
         "product_id": product_id,
         "filial_id": filial_id,
@@ -260,3 +263,90 @@ def test_price_contract_violations_rejected_as_422(client, admin_headers):
         headers=admin_headers,
     )
     assert negative_cost.status_code == 422
+
+
+# ---------------------------------------------------------------------
+# GET /catalog/prices
+# ---------------------------------------------------------------------
+
+
+def _find_in_prices(client, admin_headers, filial_id: int, product_id: int) -> dict | None:
+    """Walks every page — the dev DB has hundreds of products accumulated across runs."""
+    offset = 0
+    while True:
+        page = client.get(
+            f"/api/v1/catalog/prices?filial_id={filial_id}&limit=200&offset={offset}",
+            headers=admin_headers,
+        ).json()
+        match = next((it for it in page["items"] if it["product_id"] == product_id), None)
+        if match is not None:
+            return match
+        offset += page["limit"]
+        if offset >= page["total"]:
+            return None
+
+
+def _create_product(client, admin_headers, filial_id: int) -> int:
+    department_id = _create_department(client, admin_headers)
+    category_id = _create_category(client, admin_headers, filial_id, department_id)
+    resp = client.post(
+        f"/api/v1/catalog/products?filial_id={filial_id}",
+        json={"sku": _unique("SKU"), "name": _unique("produto-preco"), "category_id": category_id},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+def test_prices_lists_product_with_current_price(client, admin_headers):
+    filial_id = _admin_filial_id(client, admin_headers)
+    product_id = _create_product(client, admin_headers, filial_id)
+    client.post(
+        f"/api/v1/catalog/products/{product_id}/prices",
+        json={"price_default": "20.00", "price_offer": "15.00"},
+        headers=admin_headers,
+    )
+
+    item = _find_in_prices(client, admin_headers, filial_id, product_id)
+    assert item is not None
+    assert Decimal(item["price_default"]) == Decimal("20.00")
+    assert Decimal(item["price_offer"]) == Decimal("15.00")
+    assert item["filial_id"] == filial_id
+
+
+def test_prices_product_without_price_comes_as_zero(client, admin_headers):
+    filial_id = _admin_filial_id(client, admin_headers)
+    product_id = _create_product(client, admin_headers, filial_id)
+
+    item = _find_in_prices(client, admin_headers, filial_id, product_id)
+    assert item is not None
+    assert Decimal(item["price_default"]) == 0
+    assert Decimal(item["price_offer"]) == 0
+    assert item["start_date"] is None
+
+
+def test_price_without_offer_is_stored_as_zero(client, admin_headers):
+    filial_id = _admin_filial_id(client, admin_headers)
+    product_id = _create_product(client, admin_headers, filial_id)
+
+    for body in ({"price_default": "9.90"}, {"price_default": "9.90", "price_offer": None}):
+        resp = client.post(f"/api/v1/catalog/products/{product_id}/prices", json=body, headers=admin_headers)
+        assert resp.status_code == 201
+        assert Decimal(resp.json()["price_offer"]) == 0
+
+
+def test_missing_cost_and_price_404_explain_what_to_do(client, admin_headers):
+    filial_id = _admin_filial_id(client, admin_headers)
+    product_id = _create_product(client, admin_headers, filial_id)
+
+    cost = client.get(f"/api/v1/catalog/products/{product_id}/cost", headers=admin_headers)
+    assert cost.status_code == 404
+    assert f"/catalog/products/{product_id}/cost" in cost.json()["detail"]
+
+    price = client.get(f"/api/v1/catalog/products/{product_id}/prices/current", headers=admin_headers)
+    assert price.status_code == 404
+    assert f"/catalog/products/{product_id}/prices" in price.json()["detail"]
+
+
+def test_prices_requires_auth(client):
+    assert client.get("/api/v1/catalog/prices").status_code == 401

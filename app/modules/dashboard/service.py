@@ -1,9 +1,10 @@
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.timezone import local_day_bounds, local_today, to_local
 from app.models.catalog import Category, Department, Product, ProductCost, Stock
 from app.models.company import Company
 from app.models.enums import OrderStatus, RecordStatus, StockMovementReason
@@ -42,9 +43,8 @@ _EFFECTIVE_TIME = func.coalesce(Order.occurred_at, Order.created_at)
 _WEEKDAY_NAMES_PT = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
 
 
-def _day_bounds(day: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(day, time.min, tzinfo=timezone.utc)
-    return start, start + timedelta(days=1)
+# Business-timezone days (America/Sao_Paulo by default), never UTC days — see app/core/timezone.py
+_day_bounds = local_day_bounds
 
 
 def _period_conditions(start_date: date | None, end_date: date | None) -> list:
@@ -70,7 +70,7 @@ def _pct_change(before: Decimal, after: Decimal) -> Decimal | None:
 
 
 def get_indicators(db: Session, filial_ids: set[int]) -> DashboardIndicators:
-    today = datetime.now(timezone.utc).date()
+    today = local_today()
     today_start, today_end = _day_bounds(today)
 
     sales_count, sales_total = db.execute(
@@ -128,7 +128,7 @@ def get_indicators(db: Session, filial_ids: set[int]) -> DashboardIndicators:
 
     by_day: dict[date, list[Decimal]] = {}
     for effective_time, total in rows:
-        day = effective_time.astimezone(timezone.utc).date()
+        day = to_local(effective_time).date()
         by_day.setdefault(day, []).append(total)
 
     last_7_days = [
@@ -417,7 +417,7 @@ def get_sales_by_hour(
 
     by_hour: dict[int, list[Decimal]] = {}
     for effective_time, total in rows:
-        hour = effective_time.astimezone(timezone.utc).hour
+        hour = to_local(effective_time).hour
         by_hour.setdefault(hour, []).append(total)
 
     return [
@@ -439,7 +439,7 @@ def get_sales_by_weekday(
 
     by_weekday: dict[int, list[Decimal]] = {}
     for effective_time, total in rows:
-        weekday = effective_time.astimezone(timezone.utc).weekday()
+        weekday = to_local(effective_time).weekday()
         by_weekday.setdefault(weekday, []).append(total)
 
     return [
@@ -696,7 +696,7 @@ def get_stale_products(
 
 
 def get_new_clients_trend(db: Session, filial_ids: set[int], days: int) -> list[ClientsTrendPoint]:
-    today = datetime.now(timezone.utc).date()
+    today = local_today()
     window_start = today - timedelta(days=days - 1)
     window_start_dt, _ = _day_bounds(window_start)
     _, window_end_dt = _day_bounds(today)
@@ -711,7 +711,7 @@ def get_new_clients_trend(db: Session, filial_ids: set[int], days: int) -> list[
 
     by_day: dict[date, int] = {}
     for (created_at,) in rows:
-        day = created_at.astimezone(timezone.utc).date()
+        day = to_local(created_at).date()
         by_day[day] = by_day.get(day, 0) + 1
 
     return [

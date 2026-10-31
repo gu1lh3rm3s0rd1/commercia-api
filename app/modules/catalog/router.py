@@ -23,7 +23,9 @@ from app.modules.catalog.schemas import (
     PriceSet,
     ProductCostRead,
     ProductCostSet,
+    ZERO,
     ProductCreate,
+    ProductPriceRead,
     ProductRead,
     ProductUpdate,
     StockAdjust,
@@ -237,7 +239,7 @@ def get_product_cost(
     if cost is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cost not set for this product",
+            detail=f"Product {product_id} has no cost registered yet — set one with PUT /catalog/products/{product_id}/cost",
         )
     return cost
 
@@ -276,9 +278,37 @@ def get_current_price(
     if price is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No price set for this product",
+            detail=f"Product {product_id} has no price valid today — register one with POST /catalog/products/{product_id}/prices",
         )
     return price
+
+
+@router.get("/prices", response_model=Page[ProductPriceRead])
+def list_current_prices(
+    filial_id: int | None = Depends(get_scoped_filial_optional),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    accessible: set[int] = Depends(get_accessible_filial_ids),
+    _user: User = Depends(get_current_user),
+) -> Page[ProductPriceRead]:
+    filial_ids = {filial_id} if filial_id is not None else accessible
+    items, total = service.list_products(db, filial_ids, limit, offset)
+    prices = service.get_current_prices_bulk(db, [p.id for p in items])
+    page_items = []
+    for p in items:
+        price = prices.get(p.id)
+        page_items.append(
+            ProductPriceRead(
+                product_id=p.id,
+                filial_id=p.filial_id,
+                price_default=price.price_default if price else ZERO,
+                price_offer=price.price_offer if price and price.price_offer is not None else ZERO,
+                start_date=price.start_date if price else None,
+                end_date=price.end_date if price else None,
+            )
+        )
+    return Page(items=page_items, total=total, limit=limit, offset=offset)
 
 
 @router.post(

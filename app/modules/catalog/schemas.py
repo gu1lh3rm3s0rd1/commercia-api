@@ -3,11 +3,19 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import RecordStatus
 
 T = TypeVar("T")
+
+# Team convention: price/cost values are never null — 0 instead, both in requests that
+# omit them and in every response.
+ZERO = Decimal("0.00")
+
+
+def _null_as_zero(v):
+    return ZERO if v is None else v
 
 
 class ORMModel(BaseModel):
@@ -65,7 +73,7 @@ class ProductCostSet(BaseModel):
 class ProductCostRead(ORMModel):
     product_id: int
     cost_value: Decimal
-    updated_at: datetime
+    updated_at: datetime | None = None  # None only on the synthetic zero-cost row
 
 
 # --- prices ---
@@ -73,15 +81,17 @@ class ProductCostRead(ORMModel):
 
 class PriceSet(BaseModel):
     price_default: Decimal = Field(ge=0)
-    price_offer: Decimal | None = Field(default=None, ge=0)
+    price_offer: Decimal = Field(default=ZERO, ge=0)  # 0 = no offer
     start_date: date | None = None
     end_date: date | None = None
+
+    _offer_null_as_zero = field_validator("price_offer", mode="before")(_null_as_zero)
 
     @model_validator(mode="after")
     def _check_business_rules(self) -> "PriceSet":
         # Mirrors the DB's own ck_prices_offer_lower / ck_prices_date_range checks —
         # catching it here gives a clean 422 instead of an unhandled IntegrityError (500).
-        if self.price_offer is not None and self.price_offer > self.price_default:
+        if self.price_offer > self.price_default:
             raise ValueError("price_offer must not exceed price_default")
         if self.start_date is not None and self.end_date is not None and self.end_date < self.start_date:
             raise ValueError("end_date must not be before start_date")
@@ -89,14 +99,30 @@ class PriceSet(BaseModel):
 
 
 class PriceRead(ORMModel):
-    id: int
+    id: int | None = None  # None only on the synthetic zero-price row (product with no price yet)
     product_id: int
     filial_id: int
     price_default: Decimal
-    price_offer: Decimal | None
+    price_offer: Decimal  # 0 = no offer
     start_date: date | None
     end_date: date | None
-    created_at: datetime
+    created_at: datetime | None = None
+
+    # Rows written before migration 0004 may still hold NULL — read them as 0.
+    _offer_null_as_zero = field_validator("price_offer", mode="before")(_null_as_zero)
+
+
+class ProductPriceRead(BaseModel):
+    """One row per product with its price valid today (GET /catalog/prices). Price fields
+    are 0 when the product has no current price — the app must treat price_default == 0
+    as 'no price, can't be sold'."""
+
+    product_id: int
+    filial_id: int
+    price_default: Decimal
+    price_offer: Decimal
+    start_date: date | None
+    end_date: date | None
 
 
 # --- stock ---
@@ -175,6 +201,7 @@ class ProductRead(ORMModel):
     # Convenience copies of data already exposed by their own dedicated endpoints
     # (.../prices/current, .../cost, .../stock) — those keep working unchanged, this just
     # saves callers (mobile sync included) from 3 extra round-trips per product.
-    current_price: PriceRead | None = None
-    cost: ProductCostRead | None = None
+    # Never null: a zero-valued row when nothing has been set (same idea as stock).
+    current_price: PriceRead
+    cost: ProductCostRead
     stock: StockRead

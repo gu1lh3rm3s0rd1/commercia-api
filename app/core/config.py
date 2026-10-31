@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # é afetado (CORS é restrição só de navegador).
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
 
+    # Fuso do negócio: define o que é "hoje", onde o dia começa e termina nos relatórios
+    # e qual preço está vigente. As datas continuam gravadas e devolvidas em UTC.
+    app_timezone: str = "America/Sao_Paulo"
+
     @property
     def database_url(self) -> URL:
         """Built dynamically from the individual credential fields above — never a

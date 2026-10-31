@@ -94,7 +94,7 @@ class Price(Base):
     __tablename__ = "prices"
     __table_args__ = (
         CheckConstraint(
-            "price_offer IS NULL OR price_offer <= price_default", name="ck_prices_offer_lower"
+            "price_offer <= price_default", name="ck_prices_offer_lower"
         ),
         CheckConstraint(
             "end_date IS NULL OR start_date IS NULL OR end_date >= start_date",
@@ -106,7 +106,8 @@ class Price(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
     filial_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
     price_default: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    price_offer: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), default=None)
+    # 0 = no offer — never NULL since migration 0004 (team convention for price/cost values)
+    price_offer: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"), server_default="0")
     start_date: Mapped[date | None] = mapped_column(default=None)
     end_date: Mapped[date | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
