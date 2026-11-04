@@ -232,9 +232,14 @@ def ensure_allowed_db(allow_remote_db: str | None) -> None:
 
 
 def reset_database() -> None:
+    # analytics/forecasting too: ids restart, so leftover derived rows or forecasts would
+    # silently point at different products after the reset
     with engine.begin() as conn:
         tables = conn.execute(
-            text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'alembic_version'")
+            text("""
+                SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) FROM pg_tables
+                WHERE schemaname IN ('public', 'analytics', 'forecasting') AND tablename <> 'alembic_version'
+            """)
         ).scalars().all()
         conn.execute(text(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE"))
     print(f"Reset: truncated {len(tables)} tables")
