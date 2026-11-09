@@ -54,7 +54,7 @@ def _make_stocked_product(client, admin_headers, filial_id: int, price: str, qty
     ).json()["id"]
     client.post(
         f"/api/v1/catalog/products/{product_id}/prices",
-        json={"price_default": price},
+        json={"price_default": price, "start_date": "2020-01-01"},  # valid for backdated (offline) sales too
         headers=admin_headers,
     )
     client.post(
@@ -220,9 +220,23 @@ def test_pull_without_last_synced_at_returns_full_catalog(client, admin_headers)
     assert "synced_at" in body
 
 
+def _age_product(product_id: int) -> None:
+    """Moves a freshly created product's timestamps 1h back, so it falls outside the pull's
+    5-minute overlap window (the overlap re-sends anything written in the last minutes)."""
+    with engine.begin() as conn:
+        for sql in (
+            "UPDATE products SET updated_at = now() - interval '1 hour' WHERE id = :p",
+            "UPDATE prices SET created_at = now() - interval '1 hour' WHERE product_id = :p",
+            "UPDATE stocks SET updated_at = now() - interval '1 hour' WHERE product_id = :p",
+            "UPDATE product_costs SET updated_at = now() - interval '1 hour' WHERE product_id = :p",
+        ):
+            conn.execute(text(sql), {"p": product_id})
+
+
 def test_pull_incremental_only_returns_the_delta(client, admin_headers):
     filial_id = _admin_filial_id(client, admin_headers)
     product_id = _make_stocked_product(client, admin_headers, filial_id, "7.00", qty=5)
+    _age_product(product_id)
 
     checkpoint = client.get(f"/api/v1/sync/pull?filial_id={filial_id}", headers=admin_headers).json()[
         "synced_at"

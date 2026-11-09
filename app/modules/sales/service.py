@@ -1,13 +1,16 @@
-from decimal import Decimal
+from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.catalog import Product, ProductCost, Stock
+from app.models.catalog import Product, ProductCost
 from app.models.enums import OrderStatus, RecordStatus, StockMovementReason
 from app.models.sales import Client, Order, OrderItem, StockMovement
-from app.modules.catalog.service import get_current_price
+from app.core.timezone import local_today, to_local
+from app.modules.catalog.service import get_price_at, lock_or_create_stock, lock_stocks
 from app.modules.sales.schemas import OrderCreate
 
 # ---------------------------------------------------------------------
@@ -20,6 +23,10 @@ def _get_client_in_filial(db: Session, client_id: int, filial_id: int) -> Client
     if client is None or client.filial_id != filial_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Client not found in this filial"
+        )
+    if client.status != RecordStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Client {client_id} is inactive"
         )
     return client
 
@@ -36,12 +43,6 @@ def _get_sellable_product(db: Session, product_id: int, filial_id: int) -> Produ
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Product {product_id} is not active"
         )
     return product
-
-
-def _get_stock_row(db: Session, product_id: int, filial_id: int) -> Stock | None:
-    return db.execute(
-        select(Stock).where(Stock.product_id == product_id, Stock.filial_id == filial_id)
-    ).scalar_one_or_none()
 
 
 def get_order_or_404(db: Session, order_id: int, filial_ids: set[int]) -> Order:
@@ -76,53 +77,86 @@ def list_orders(
 # ---------------------------------------------------------------------
 
 
+def allocate_discount(discount: Decimal, gross_lines: list[Decimal]) -> list[Decimal]:
+    """Splits the order discount across its lines in proportion to each line's gross value,
+    rounded to cents; the rounding remainder goes to the largest line (first one on ties) so
+    the shares always add up to exactly `discount`. Same rule as migration 0009's backfill."""
+    order_gross = sum(gross_lines, Decimal("0"))
+    if discount == 0 or order_gross == 0:
+        return [Decimal("0.00")] * len(gross_lines)
+    shares = [(discount * gross / order_gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) for gross in gross_lines]
+    largest = max(range(len(gross_lines)), key=lambda i: (gross_lines[i], -i))
+    shares[largest] += discount - sum(shares, Decimal("0"))
+    return shares
+
+
 def create_order(
-    db: Session, filial_id: int, created_by_id: int, data: OrderCreate
+    db: Session,
+    filial_id: int,
+    created_by_id: int,
+    data: OrderCreate,
+    client_reference: UUID | None = None,
+    occurred_at: datetime | None = None,
 ) -> tuple[Order, list[OrderItem]]:
+    """client_reference/occurred_at are only passed by the mobile sync push (offline sales).
+
+    Concurrency: the stock rows of every product in the order are locked (FOR UPDATE)
+    before availability is checked and kept locked until the commit, so two simultaneous
+    sales can't both sell the last units nor overwrite each other's stock update."""
     client = _get_client_in_filial(db, data.client_id, filial_id)
+    # An offline sale is priced as of the day it happened (business timezone), not the day
+    # it was synced — the price the customer actually paid.
+    sale_day = to_local(occurred_at).date() if occurred_at is not None else local_today()
 
     # Pass 1 — validate everything and compute what each line needs, WITHOUT writing
     # anything yet. If any item fails, we bail out before touching the DB at all.
-    prepared: list[tuple[Product, int, Decimal, Decimal, Stock | None, int]] = []
+    products: dict[int, tuple[Product, Decimal, Decimal]] = {}  # id -> product, unit price, cost
     for line in data.items:
+        if line.product_id in products:
+            continue
         product = _get_sellable_product(db, line.product_id, filial_id)
-
-        price = get_current_price(db, product.id)
+        price = get_price_at(db, product.id, sale_day)
         if price is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Product {product.id} has no price set for today",
+                detail=f"Product {product.id} has no price set for {sale_day}",
             )
         # price_offer == 0 means "no offer" (team convention: never null) — sell at the
         # offer only when there is a real one, otherwise a missing offer would sell for free.
-        # `or 0` covers rows still NULL before migration 0004 is applied.
-        unit_price = price.price_offer if (price.price_offer or 0) > 0 else price.price_default
-
+        unit_price = price.price_offer if price.price_offer > 0 else price.price_default
         cost_row = db.execute(
             select(ProductCost).where(ProductCost.product_id == product.id)
         ).scalar_one_or_none()
         cost_at_sale = cost_row.cost_value if cost_row is not None else Decimal("0")
+        products[product.id] = (product, unit_price, cost_at_sale)
 
-        stock_row = _get_stock_row(db, product.id, filial_id)
-        available = stock_row.quantity if stock_row is not None else 0
-        if available < line.quantity:
+    stocks = lock_stocks(db, filial_id, products)
+    remaining = {pid: (stocks[pid].quantity if pid in stocks else 0) for pid in products}
+    requested: dict[int, int] = {}
+    for line in data.items:
+        requested[line.product_id] = requested.get(line.product_id, 0) + line.quantity
+    for product_id, quantity in requested.items():
+        # Summed per product: the same product on two lines must fit in the stock together.
+        if remaining[product_id] < quantity:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Insufficient stock for product {product.id}: available {available}, "
-                f"requested {line.quantity}",
+                detail=f"Insufficient stock for product {product_id}: available {remaining[product_id]}, "
+                f"requested {quantity}",
             )
 
-        prepared.append((product, line.quantity, unit_price, cost_at_sale, stock_row, available - line.quantity))
-
-    subtotal = sum((qty * unit_price for _, qty, unit_price, _, _, _ in prepared), Decimal("0"))
+    subtotal = sum((products[line.product_id][1] * line.quantity for line in data.items), Decimal("0"))
     if data.discount > subtotal:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Discount cannot exceed the order subtotal"
         )
     total = subtotal - data.discount
+    allocation = allocate_discount(
+        data.discount, [products[line.product_id][1] * line.quantity for line in data.items]
+    )
 
     # Pass 2 — everything validated, now actually write order + items + stock + movements
-    # as one transaction (single commit at the end).
+    # as one transaction (single commit at the end). Lines are kept as sent; each line's
+    # movement records the running stock after it.
     order = Order(
         client_id=client.id,
         total=total,
@@ -131,37 +165,35 @@ def create_order(
         status=OrderStatus.PENDING,
         created_by_id=created_by_id,
         filial_id=filial_id,
-        client_reference=data.client_reference,
-        occurred_at=data.occurred_at,
+        client_reference=client_reference,
+        occurred_at=occurred_at,
     )
     db.add(order)
     db.flush()  # need order.id below
 
     order_items: list[OrderItem] = []
-    for product, quantity, unit_price, cost_at_sale, stock_row, new_qty in prepared:
+    for line, discount_share in zip(data.items, allocation):
+        product, unit_price, cost_at_sale = products[line.product_id]
         order_item = OrderItem(
             order_id=order.id,
             product_id=product.id,
-            quantity=quantity,
+            quantity=line.quantity,
             unit_price=unit_price,
             cost_at_sale=cost_at_sale,
+            discount_allocated=discount_share,
         )
         db.add(order_item)
         db.flush()  # need order_item.id for the stock_movements row below
 
-        if stock_row is None:
-            stock_row = Stock(product_id=product.id, filial_id=filial_id, quantity=new_qty)
-            db.add(stock_row)
-        else:
-            stock_row.quantity = new_qty
-
+        remaining[product.id] -= line.quantity
+        stocks[product.id].quantity = remaining[product.id]
         db.add(
             StockMovement(
                 product_id=product.id,
                 filial_id=filial_id,
-                change_qty=-quantity,
+                change_qty=-line.quantity,
                 reason=StockMovementReason.SALE,
-                resulting_qty=new_qty,
+                resulting_qty=remaining[product.id],
                 order_item_id=order_item.id,
             )
         )
@@ -179,7 +211,17 @@ def create_order(
 # ---------------------------------------------------------------------
 
 
+def _lock_order(db: Session, order: Order) -> Order:
+    """Re-reads the order with FOR UPDATE: the status checks below see the committed state,
+    and a concurrent pay/cancel of the same order waits instead of racing (cancelling twice
+    at the same time would return the stock twice)."""
+    return db.execute(
+        select(Order).where(Order.id == order.id).with_for_update().execution_options(populate_existing=True)
+    ).scalar_one()
+
+
 def mark_as_paid(db: Session, order: Order) -> Order:
+    order = _lock_order(db, order)
     if order.status != OrderStatus.PENDING:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Only a pending order can be marked as paid"
@@ -191,29 +233,26 @@ def mark_as_paid(db: Session, order: Order) -> Order:
 
 
 def cancel_order(db: Session, order: Order) -> Order:
+    order = _lock_order(db, order)
     if order.status == OrderStatus.CANCELLED:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order is already cancelled")
 
     # Reverse every item's stock decrement with a new movement — never edit the original
     # SALE movement, never a raw UPDATE to stocks.quantity without a movement row.
-    for item in get_order_items(db, order.id):
-        stock_row = _get_stock_row(db, item.product_id, order.filial_id)
-        current_qty = stock_row.quantity if stock_row is not None else 0
-        new_qty = current_qty + item.quantity
-
+    items = get_order_items(db, order.id)
+    stocks = lock_stocks(db, order.filial_id, [item.product_id for item in items])
+    for item in items:
+        stock_row = stocks.get(item.product_id)
         if stock_row is None:
-            stock_row = Stock(product_id=item.product_id, filial_id=order.filial_id, quantity=new_qty)
-            db.add(stock_row)
-        else:
-            stock_row.quantity = new_qty
-
+            stock_row = stocks[item.product_id] = lock_or_create_stock(db, item.product_id, order.filial_id)
+        stock_row.quantity += item.quantity
         db.add(
             StockMovement(
                 product_id=item.product_id,
                 filial_id=order.filial_id,
                 change_qty=item.quantity,
                 reason=StockMovementReason.ADJUSTMENT,
-                resulting_qty=new_qty,
+                resulting_qty=stock_row.quantity,
                 order_item_id=item.id,
             )
         )

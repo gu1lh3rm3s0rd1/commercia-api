@@ -26,6 +26,8 @@ from app.db.session import engine
 _LOCK = "SELECT pg_advisory_xact_lock(hashtext('analytics_jobs'))"
 
 _EFFECTIVE = "coalesce(o.occurred_at, o.created_at)"  # same "when did the sale happen" rule as the dashboard
+# daily_sales.revenue is NET revenue: SUM(order_items.net_total), the order discount
+# allocated to its items (migration 0009) — the same figure as the dashboard's sales summary.
 
 
 @dataclass
@@ -76,7 +78,7 @@ def _watermarks(conn: Connection) -> tuple[int, int]:
 _DAILY_SALES_SQL = f"""
     INSERT INTO analytics.daily_sales (sale_date, filial_id, product_id, orders_count, quantity, revenue, cost)
     SELECT ({_EFFECTIVE} AT TIME ZONE :tz)::date, o.filial_id, oi.product_id,
-           count(DISTINCT o.id), sum(oi.quantity), sum(oi.total), sum(oi.quantity * oi.cost_at_sale)
+           count(DISTINCT o.id), sum(oi.quantity), sum(oi.net_total), sum(oi.quantity * oi.cost_at_sale)
     FROM public.orders o
     JOIN public.order_items oi ON oi.order_id = o.id
     WHERE o.status <> 'cancelled'
@@ -286,7 +288,7 @@ def verify() -> list[tuple[str, bool, str]]:
     today_start, _ = local_day_bounds(local_today())
     with engine.connect() as conn:
         public_totals = conn.execute(text(f"""
-            SELECT coalesce(sum(oi.quantity), 0), coalesce(sum(oi.total), 0), coalesce(sum(oi.quantity * oi.cost_at_sale), 0)
+            SELECT coalesce(sum(oi.quantity), 0), coalesce(sum(oi.net_total), 0), coalesce(sum(oi.quantity * oi.cost_at_sale), 0)
             FROM public.orders o JOIN public.order_items oi ON oi.order_id = o.id
             WHERE o.status <> 'cancelled' AND {_EFFECTIVE} < :end_ts
         """), p).one()

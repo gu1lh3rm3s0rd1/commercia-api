@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.modules.analytics.router import router as analytics_router
 from app.modules.auth.router import router as auth_router
 from app.modules.catalog.router import router as catalog_router
 from app.modules.clients.router import router as clients_router
@@ -22,3 +23,4 @@ router.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
 router.include_router(companies_router, prefix="/companies", tags=["companies"])
 router.include_router(users_router, prefix="/users", tags=["users"])
 router.include_router(forecasts_router, prefix="/forecasts", tags=["forecasts"])
+router.include_router(analytics_router, prefix="/analytics", tags=["analytics"])

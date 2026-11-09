@@ -1,12 +1,18 @@
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.company import Company
 from app.models.user import User, UserCompany
 
 
-def list_users(db: Session, limit: int, offset: int) -> tuple[list[User], int]:
-    base = select(User)
+def list_users(
+    db: Session, accessible: set[int], caller_is_superuser: bool, limit: int, offset: int
+) -> tuple[list[User], int]:
+    """Users linked to the filiais the caller can access — never another store's users.
+    Superusers (global admins, not tied to a filial) are only listed to another superuser."""
+    linked = select(UserCompany.user_id).where(UserCompany.filial_id.in_(accessible))
+    visible = or_(User.id.in_(linked), User.is_superuser.is_(True)) if caller_is_superuser else User.id.in_(linked)
+    base = select(User).where(visible)
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
     items = db.execute(base.order_by(User.username).limit(limit).offset(offset)).scalars().all()
     return list(items), total

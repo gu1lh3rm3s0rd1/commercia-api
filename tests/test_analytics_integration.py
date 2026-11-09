@@ -57,7 +57,8 @@ def _make_product(client, admin_headers, filial_id: int, qty: int) -> int:
         json={"sku": _unique("SKU"), "name": "Produto analytics", "category_id": category_id},
         headers=admin_headers,
     ).json()["id"]
-    client.post(f"/api/v1/catalog/products/{product_id}/prices", json={"price_default": "10.00"}, headers=admin_headers)
+    client.post(f"/api/v1/catalog/products/{product_id}/prices", json={"price_default": "10.00", "start_date": "2020-01-01"},
+                headers=admin_headers)  # valid for backdated (offline) sales too
     client.post(
         f"/api/v1/catalog/products/{product_id}/stock/adjustments",
         json={"quantity_delta": qty, "reason": "restock"},

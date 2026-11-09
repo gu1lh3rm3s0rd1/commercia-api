@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.deps import require_permission
+from app.core.deps import get_accessible_filial_ids, require_permission
 from app.db.session import get_db
 from app.modules.catalog.schemas import Page
 from app.modules.users import service
@@ -17,8 +17,10 @@ def list_users(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
+    accessible: set[int] = Depends(get_accessible_filial_ids),
+    caller: User = Depends(require_permission("users.manage")),
 ) -> Page[UserRead]:
-    items, total = service.list_users(db, limit, offset)
+    items, total = service.list_users(db, accessible, caller.is_superuser, limit, offset)
     accessible_map = service.get_accessible_filial_ids_bulk(db, items)
     page_items = [
         UserRead(

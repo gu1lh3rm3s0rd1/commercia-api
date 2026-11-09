@@ -54,7 +54,7 @@ def _make_stocked_product(client, admin_headers, filial_id: int, price: str, qty
     ).json()["id"]
     client.post(
         f"/api/v1/catalog/products/{product_id}/prices",
-        json={"price_default": price},
+        json={"price_default": price, "start_date": "2020-01-01"},  # valid for backdated (offline) sales too
         headers=admin_headers,
     )
     client.post(

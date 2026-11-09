@@ -293,7 +293,7 @@ def get_sales_by_category(
     ]
 
     quantity_col = func.coalesce(func.sum(OrderItem.quantity), 0).label("quantity_sold")
-    revenue_col = func.coalesce(func.sum(OrderItem.total), 0).label("total_revenue")
+    revenue_col = func.coalesce(func.sum(OrderItem.net_total), 0).label("total_revenue")
 
     base = (
         select(Category.id, Category.name, Department.id, Department.name, quantity_col, revenue_col)
@@ -339,7 +339,7 @@ def get_top_products(
     ]
 
     quantity_col = func.coalesce(func.sum(OrderItem.quantity), 0).label("quantity_sold")
-    revenue_col = func.coalesce(func.sum(OrderItem.total), 0).label("total_revenue")
+    revenue_col = func.coalesce(func.sum(OrderItem.net_total), 0).label("total_revenue")
     order_count_col = func.count(func.distinct(Order.id)).label("order_count")
 
     base = (
@@ -530,7 +530,9 @@ def get_sales_by_filial(
 
 
 # ---------------------------------------------------------------------
-# margin reports — use cost_at_sale, frozen at sale time (Fase 4)
+# margin reports — use cost_at_sale, frozen at sale time (Fase 4). Revenue is always NET
+# (order_items.net_total, the order discount allocated to its items — migration 0009), so it
+# matches the sales summary, which sums orders.total.
 # ---------------------------------------------------------------------
 
 
@@ -545,7 +547,7 @@ def get_margin_summary(
 
     total_revenue, total_cost = db.execute(
         select(
-            func.coalesce(func.sum(OrderItem.total), 0),
+            func.coalesce(func.sum(OrderItem.net_total), 0),
             func.coalesce(func.sum(OrderItem.quantity * OrderItem.cost_at_sale), 0),
         )
         .select_from(OrderItem)
@@ -581,7 +583,7 @@ def get_margin_by_product(
     ]
 
     quantity_expr = func.coalesce(func.sum(OrderItem.quantity), 0)
-    revenue_expr = func.coalesce(func.sum(OrderItem.total), 0)
+    revenue_expr = func.coalesce(func.sum(OrderItem.net_total), 0)
     cost_expr = func.coalesce(func.sum(OrderItem.quantity * OrderItem.cost_at_sale), 0)
     margin_expr = revenue_expr - cost_expr
 

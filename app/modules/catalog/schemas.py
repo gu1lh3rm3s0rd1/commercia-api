@@ -1,7 +1,7 @@
 import enum
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Generic, TypeVar
+from typing import Annotated, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -12,6 +12,12 @@ T = TypeVar("T")
 # Team convention: price/cost values are never null — 0 instead, both in requests that
 # omit them and in every response.
 ZERO = Decimal("0.00")
+
+
+# Money in requests: never negative, at most 2 decimal places (the DB columns are
+# numeric(12,2) — a 3rd decimal would be silently rounded on save, so the stored total
+# would no longer match what was computed from the request).
+Money = Annotated[Decimal, Field(ge=0, max_digits=12, decimal_places=2)]
 
 
 def _null_as_zero(v):
@@ -67,7 +73,7 @@ class CategoryRead(ORMModel):
 
 
 class ProductCostSet(BaseModel):
-    cost_value: Decimal = Field(ge=0)
+    cost_value: Money
 
 
 class ProductCostRead(ORMModel):
@@ -80,8 +86,8 @@ class ProductCostRead(ORMModel):
 
 
 class PriceSet(BaseModel):
-    price_default: Decimal = Field(ge=0)
-    price_offer: Decimal = Field(default=ZERO, ge=0)  # 0 = no offer
+    price_default: Money
+    price_offer: Money = ZERO  # 0 = no offer
     start_date: date | None = None
     end_date: date | None = None
 

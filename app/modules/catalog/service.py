@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -299,17 +300,22 @@ def set_product_cost(db: Session, product_id: int, cost_value: Decimal) -> Produ
 
 
 def get_current_price(db: Session, product_id: int) -> Price | None:
-    """The price row valid *today* — start_date <= today <= end_date (either bound may be
+    """The price row valid *today* (business timezone)."""
+    return get_price_at(db, product_id, local_today())
+
+
+def get_price_at(db: Session, product_id: int, day: date) -> Price | None:
+    """The price row valid on `day` — start_date <= day <= end_date (either bound may be
     open/NULL). Checking only `end_date IS NULL` (as an earlier version of this function
-    did) would wrongly skip a row whose end_date is a real, still-future date."""
-    today = local_today()
+    did) would wrongly skip a row whose end_date is a real, still-future date. Used with a
+    past day for offline sales: they're priced as of when they happened, not when synced."""
     return (
         db.execute(
             select(Price)
             .where(
                 Price.product_id == product_id,
-                or_(Price.start_date.is_(None), Price.start_date <= today),
-                or_(Price.end_date.is_(None), Price.end_date >= today),
+                or_(Price.start_date.is_(None), Price.start_date <= day),
+                or_(Price.end_date.is_(None), Price.end_date >= day),
             )
             .order_by(Price.start_date.desc(), Price.created_at.desc())
         )
@@ -357,6 +363,14 @@ def set_price(
 
     current = get_current_price(db, product.id)
     if current is not None:
+        # Closing the current price before its own start would invert its validity window
+        # (the DB rejects it: ck_prices_date_range) — reject it here as a clean 422.
+        if current.start_date is not None and effective_start < current.start_date:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"start_date {effective_start} is before the current price's start "
+                f"({current.start_date}) — a new price can only start on or after it",
+            )
         current.end_date = effective_start
 
     new_price = Price(
@@ -376,6 +390,35 @@ def set_price(
 # ---------------------------------------------------------------------
 # stock — never change quantity without a stock_movements row in the same transaction
 # ---------------------------------------------------------------------
+
+
+def lock_stocks(db: Session, filial_id: int, product_ids) -> dict[int, Stock]:
+    """Locks (SELECT ... FOR UPDATE) the stock rows of these products until the end of the
+    transaction, so a concurrent sale/cancel/adjustment waits instead of overwriting the
+    quantity with a value computed from a stale read (lost update). Always locked in
+    product_id order, so two transactions never deadlock on each other's rows."""
+    ids = sorted(set(product_ids))
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(Stock)
+        .where(Stock.filial_id == filial_id, Stock.product_id.in_(ids))
+        .order_by(Stock.product_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalars().all()
+    return {stock.product_id: stock for stock in rows}
+
+
+def lock_or_create_stock(db: Session, product_id: int, filial_id: int) -> Stock:
+    """Like lock_stocks for one product, creating its (quantity 0) row first if missing —
+    ON CONFLICT DO NOTHING, so two concurrent first adjustments can't both insert it."""
+    db.execute(
+        pg_insert(Stock)
+        .values(product_id=product_id, filial_id=filial_id, quantity=0)
+        .on_conflict_do_nothing(index_elements=["product_id", "filial_id"])
+    )
+    return lock_stocks(db, filial_id, [product_id])[product_id]
 
 
 def get_stock(db: Session, product: Product) -> Stock | None:
@@ -401,19 +444,14 @@ def adjust_stock(
             status_code=status.HTTP_400_BAD_REQUEST, detail="quantity_delta must not be zero"
         )
 
-    stock = get_stock(db, product)
-    current_qty = stock.quantity if stock is not None else 0
-    new_qty = current_qty + quantity_delta
+    stock = lock_or_create_stock(db, product.id, product.filial_id)
+    new_qty = stock.quantity + quantity_delta
     if new_qty < 0:
+        db.rollback()  # releases the lock (and the placeholder row, if it was just created)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Adjustment would make stock negative"
         )
-
-    if stock is None:
-        stock = Stock(product_id=product.id, filial_id=product.filial_id, quantity=new_qty)
-        db.add(stock)
-    else:
-        stock.quantity = new_qty
+    stock.quantity = new_qty
 
     db.add(
         StockMovement(

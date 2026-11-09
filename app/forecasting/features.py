@@ -41,7 +41,13 @@ def last_sale_date(conn: Connection, filial_id: int, up_to: date) -> date | None
     ).scalar()
 
 
-def load_filial_series(conn: Connection, filial_id: int, train_end: date) -> FilialSeries | None:
+def load_filial_series(
+    conn: Connection, filial_id: int, train_end: date, exclude_inactive: bool = True
+) -> FilialSeries | None:
+    """exclude_inactive: real forecasts skip products deactivated today. A backtest passes
+    False — the product's CURRENT status is information from after train_end, so using it
+    would leak the future into a forecast made "as of" a past date; there, only the data up
+    to train_end (a sale in the last 8 weeks) decides."""
     train_start = conn.execute(
         text("SELECT min(snapshot_date) FROM analytics.daily_stock_snapshot WHERE filial_id = :f"),
         {"f": filial_id},
@@ -51,19 +57,20 @@ def load_filial_series(conn: Connection, filial_id: int, train_end: date) -> Fil
     dates = [train_start + timedelta(days=i) for i in range((train_end - train_start).days + 1)]
     position = {d: i for i, d in enumerate(dates)}
 
-    # Active products with at least one sale in the last 8 weeks of the window.
+    # Products with at least one sale in the last 8 weeks of the window (and active today,
+    # unless this is a backtest — see the docstring).
     recent_start = train_end - timedelta(days=RECENT_SALES_DAYS - 1)
     product_rows = conn.execute(
         text("""
             SELECT p.id, p.category_id, c.department_id
             FROM public.products p
             JOIN public.categories c ON c.id = p.category_id
-            WHERE p.filial_id = :f AND p.status = 'active'
+            WHERE p.filial_id = :f AND (:all_statuses OR p.status = 'active')
               AND EXISTS (SELECT 1 FROM analytics.daily_sales s
                           WHERE s.product_id = p.id AND s.sale_date BETWEEN :recent AND :end AND s.quantity > 0)
             ORDER BY p.id
         """),
-        {"f": filial_id, "recent": recent_start, "end": train_end},
+        {"f": filial_id, "recent": recent_start, "end": train_end, "all_statuses": not exclude_inactive},
     ).all()
     products = {
         pid: ProductSeries(pid, cat, dep, [None] * len(dates), [None] * len(dates)) for pid, cat, dep in product_rows

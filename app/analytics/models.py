@@ -23,7 +23,7 @@ class DailySales(Base):
     product_id: Mapped[int] = mapped_column(primary_key=True)
     orders_count: Mapped[int]
     quantity: Mapped[int]
-    revenue: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    revenue: Mapped[Decimal] = mapped_column(Numeric(14, 2))  # net: SUM(order_items.net_total)
     cost: Mapped[Decimal] = mapped_column(Numeric(14, 2))
 
 

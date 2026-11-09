@@ -82,7 +82,8 @@ class ProductCost(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
     cost_value: Mapped[Decimal] = mapped_column(Numeric(12, 2))
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # onupdate: the incremental /sync/pull finds changed costs by this column
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 
 class Price(Base):
@@ -127,4 +128,6 @@ class Stock(Base):
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
     filial_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
     quantity: Mapped[int] = mapped_column(default=0)
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # onupdate: the incremental /sync/pull finds changed stock by this column — without it
+    # a stock change was never resent to the mobile app
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

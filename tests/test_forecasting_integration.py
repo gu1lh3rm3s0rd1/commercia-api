@@ -109,20 +109,33 @@ def test_api_serves_persisted_forecast_without_computing_anything(client, admin_
         ).all()
     assert [(p["date"], Decimal(p["predicted"])) for p in body["points"]] == [(d.isoformat(), v) for d, v in stored]
 
-    # without ?model=, the most accurate of each model's latest run is served — computed
-    # from the DB, since earlier generations of other models may exist besides this module's
+    # without ?model=, the most accurate model is served: by the Fase 9 evaluation when the
+    # model was evaluated, otherwise by the run's own holdout — computed here from the DB,
+    # since runs of other models may exist besides this module's
     with engine.connect() as conn:
-        best_model = conn.execute(
+        latest = conn.execute(
             text("""
-                SELECT model FROM (
-                    SELECT DISTINCT ON (model) model, created_at, id, (metrics -> 'filial' ->> 'wape')::numeric AS wape
-                    FROM forecasting.forecast_runs
-                    WHERE filial_id = :f AND target = 'quantity' AND status = 'success'
-                    ORDER BY model, created_at DESC, id DESC
-                ) latest ORDER BY wape ASC NULLS LAST, created_at DESC, id DESC LIMIT 1
+                SELECT DISTINCT ON (model) model, model_version, (metrics -> 'filial' ->> 'wape')::numeric AS holdout
+                FROM forecasting.forecast_runs
+                WHERE filial_id = :f AND target = 'quantity' AND status = 'success' AND kind = 'forecast'
+                ORDER BY model, created_at DESC, id DESC
             """),
             {"f": filial_id},
-        ).scalar()
+        ).all()
+        evaluated = dict(conn.execute(
+            text("""
+                SELECT r.model || '/' || r.model_version, sum(e.abs_error_total) / nullif(sum(e.actual_total), 0)
+                FROM forecasting.forecast_evaluations e JOIN forecasting.forecast_runs r ON r.id = e.run_id
+                WHERE r.filial_id = :f AND r.target = 'quantity' AND e.level = 'filial' AND e.horizon_bucket = '1-7'
+                GROUP BY 1
+            """),
+            {"f": filial_id},
+        ).all())
+    scored = [m for m in latest if f"{m.model}/{m.model_version}" in evaluated]
+    if scored:
+        best_model = min(scored, key=lambda m: evaluated[f"{m.model}/{m.model_version}"]).model
+    else:
+        best_model = min(latest, key=lambda m: m.holdout).model
     assert body["run"]["model"] == best_model
 
 

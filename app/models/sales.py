@@ -84,7 +84,12 @@ class OrderItem(Base):
     (Fase 5) when server-side stock is less than what was requested offline — it stays
     NULL in the normal case. cost_at_sale freezes product_costs.cost_value at sale time,
     the same way unit_price freezes the price — needed for correct margin analysis even
-    if the product's cost changes later."""
+    if the product's cost changes later.
+
+    discount_allocated is this item's share of orders.discount (proportional to the item's
+    gross value, rounding remainder on the largest item — migration 0009). total stays the
+    GROSS line value; net_total is the official revenue of the line, and for every order
+    SUM(net_total) = orders.total."""
 
     __tablename__ = "order_items"
     __table_args__ = (
@@ -94,6 +99,10 @@ class OrderItem(Base):
         ),
         CheckConstraint("unit_price >= 0", name="ck_order_items_unit_price"),
         CheckConstraint("cost_at_sale >= 0", name="ck_order_items_cost_at_sale"),
+        CheckConstraint(
+            "discount_allocated >= 0 AND discount_allocated <= quantity * unit_price",
+            name="ck_order_items_discount_allocated",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -105,6 +114,10 @@ class OrderItem(Base):
     cost_at_sale: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     total: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), Computed("quantity * unit_price", persisted=True)
+    )
+    discount_allocated: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    net_total: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), Computed("quantity * unit_price - discount_allocated", persisted=True)
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

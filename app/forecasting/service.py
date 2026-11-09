@@ -41,6 +41,7 @@ class RunSummary:
     train_end: date
     n_series: int
     metrics: dict
+    kind: str = "forecast"
 
 
 def _sigma(fn, params, values, dates) -> float:
@@ -114,18 +115,19 @@ def _band_rows(run_id, level, entity_id, dates, predicted, sigma) -> list[dict]:
     return rows
 
 
-def _run_one(series: features.FilialSeries, model: str, target: str, horizon: int) -> RunSummary:
+def _run_one(series: features.FilialSeries, model: str, target: str, horizon: int, kind: str = "forecast") -> RunSummary:
     fn, params = baseline.MODELS[model]
     with engine.begin() as conn:
         run_id = conn.execute(
             text("""
                 INSERT INTO forecasting.forecast_runs
-                    (model, model_version, params, target, filial_id, train_start, train_end, horizon_days, status)
-                VALUES (:model, :version, CAST(:params AS jsonb), :target, :filial, :start, :end, :horizon, 'running')
+                    (model, model_version, params, target, filial_id, train_start, train_end, horizon_days, status, kind)
+                VALUES (:model, :version, CAST(:params AS jsonb), :target, :filial, :start, :end, :horizon, 'running', :kind)
                 RETURNING id
             """),
             {"model": model, "version": baseline.VERSION, "params": json.dumps(params), "target": target,
-             "filial": series.filial_id, "start": series.dates[0], "end": series.dates[-1], "horizon": horizon},
+             "filial": series.filial_id, "start": series.dates[0], "end": series.dates[-1], "horizon": horizon,
+             "kind": kind},
         ).scalar()
 
     try:
@@ -168,7 +170,7 @@ def _run_one(series: features.FilialSeries, model: str, target: str, horizon: in
                 {"e": str(exc)[:2000], "id": run_id},
             )
         raise
-    return RunSummary(run_id, series.filial_id, model, target, series.dates[0], series.dates[-1], n_series, metrics)
+    return RunSummary(run_id, series.filial_id, model, target, series.dates[0], series.dates[-1], n_series, metrics, kind)
 
 
 def generate(
@@ -198,3 +200,54 @@ def generate(
                 loaded.append(series)
 
     return [_run_one(series, model, target, horizon) for series in loaded for target in targets for model in models]
+
+
+BACKTEST_ORIGINS = 12
+BACKTEST_STEP_DAYS = 7
+MIN_TRAIN_DAYS = 56
+
+
+def backtest(
+    filial_ids: list[int] | None = None,
+    models: list[str] | None = None,
+    targets: list[str] | None = None,
+    horizon: int = DEFAULT_HORIZON,
+    origins: int = BACKTEST_ORIGINS,
+    step_days: int = BACKTEST_STEP_DAYS,
+) -> list[RunSummary]:
+    """Retroactive forecasts (rolling origin) so Fase 9 can score models without waiting:
+    for each of `origins` cut-off dates, `step_days` apart, train ONLY on data up to that
+    date and forecast the next `horizon` days — days that already happened. The latest
+    cut-off is `horizon` days before the last day with a sale, so every predicted day has
+    a real outcome. Persisted like any run, with kind='backtest' (the API never serves
+    them). Re-running replaces the filial's previous backtest runs: they're evaluation
+    artifacts, and duplicates would only re-weight the averages."""
+    models = models or list(baseline.MODELS)
+    targets = targets or list(TARGETS)
+    yesterday = local_today() - timedelta(days=1)
+
+    plans: list[tuple[int, list[features.FilialSeries]]] = []
+    with engine.connect() as conn:
+        if filial_ids is None:
+            filial_ids = list(conn.execute(text("SELECT DISTINCT filial_id FROM analytics.daily_sales ORDER BY 1")).scalars())
+        for filial_id in filial_ids:
+            last_sale = features.last_sale_date(conn, filial_id, yesterday)
+            if last_sale is None:
+                continue
+            series_list = []
+            for k in range(origins):
+                cut = last_sale - timedelta(days=horizon + k * step_days)
+                series = features.load_filial_series(conn, filial_id, cut, exclude_inactive=False)
+                if series is not None and series.products and len(series.dates) >= MIN_TRAIN_DAYS:
+                    series_list.append(series)
+            plans.append((filial_id, series_list))
+
+    summaries: list[RunSummary] = []
+    for filial_id, series_list in plans:
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM forecasting.forecast_runs WHERE filial_id = :f AND kind = 'backtest'"), {"f": filial_id}
+            )
+        for series in sorted(series_list, key=lambda s: s.dates[-1]):
+            summaries += [_run_one(series, model, target, horizon, kind="backtest") for target in targets for model in models]
+    return summaries
