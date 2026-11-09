@@ -80,6 +80,7 @@ class SyncUserRead(BaseModel):
 
     id: int
     username: str
+    full_name: str
     password_hash: str
     is_active: bool
     is_superuser: bool

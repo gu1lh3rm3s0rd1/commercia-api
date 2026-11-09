@@ -12,6 +12,7 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(60), unique=True)
+    full_name: Mapped[str] = mapped_column(String(120))  # RF01 "nome" (migration 0010)
     email: Mapped[str] = mapped_column(String(160), unique=True)
     password_hash: Mapped[str]
     is_active: Mapped[bool] = mapped_column(default=True)

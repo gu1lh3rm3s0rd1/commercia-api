@@ -5,6 +5,7 @@ from sqlalchemy import or_, select, union
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core import audit
 from app.core.timezone import local_today, to_local
 from app.models.catalog import Category, Department, Price, Product, ProductCost, Stock
 from app.models.sales import Order
@@ -98,6 +99,7 @@ def _existing_result(db: Session, existing: Order, filial_id: int, sale: SyncSal
 def push_batch(
     db: Session, filial_id: int, created_by_id: int, sales: list[SyncSaleCreate]
 ) -> list[PushResultItem]:
+    audit.set_source(db, "sync")  # the orders below are logged as offline sales
     return [push_sale(db, filial_id, created_by_id, sale) for sale in sales]
 
 

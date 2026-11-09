@@ -50,7 +50,7 @@ from app.core.security import hash_password
 from app.core.timezone import local_today, local_tz
 from app.db.session import SessionLocal, engine
 from app.main import app
-from app.models.user import Group, GroupPermission, Permission, User, UserCompany, UserGroup
+from app.models.user import Group, User, UserCompany, UserGroup
 from scripts.seed_admin import ADMIN_PASSWORD, ADMIN_USERNAME, seed
 
 TZ = local_tz()  # business timezone (America/Sao_Paulo by default)
@@ -249,15 +249,12 @@ def reset_database() -> None:
 def create_sellers(filial_id: int) -> None:
     db = SessionLocal()
     try:
-        group = Group(name="Vendedor")
-        db.add(group)
-        db.flush()
-        for code in ("orders.manage", "clients.edit"):
-            perm = db.execute(select(Permission).where(Permission.code == code)).scalar_one()
-            db.add(GroupPermission(group_id=group.id, permission_id=perm.id))
+        # the fixed "Vendedor" profile is created by scripts.seed_admin (app/core/roles.py)
+        group = db.execute(select(Group).where(Group.name == "Vendedor")).scalar_one()
         for username, first_name in SELLERS:
             user = User(
                 username=username,
+                full_name=first_name,
                 email=f"{username}@commercia.local",
                 password_hash=hash_password(SELLER_PASSWORD),
             )

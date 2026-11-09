@@ -11,6 +11,7 @@ Idempotent: safe to run more than once, it only creates rows that don't already 
 
 from sqlalchemy import select
 
+from app.core.roles import GROUPS, PERMISSIONS
 from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models.company import Company
@@ -36,33 +37,35 @@ def seed() -> None:
             db.add(company)
             db.flush()
 
-        admin_group = db.execute(
-            select(Group).where(Group.name == "Administrador")
-        ).scalar_one_or_none()
-        if admin_group is None:
-            admin_group = Group(name="Administrador")
-            db.add(admin_group)
-            db.flush()
-
-        for code, name in (
-            ("users.manage", "Gerenciar usuários"),
-            ("products.edit", "Gerenciar catálogo (categorias/produtos/preços/estoque)"),
-            ("clients.edit", "Gerenciar clientes"),
-            ("orders.manage", "Gerenciar vendas"),
-        ):
+        # Permissions + the fixed access profiles (app/core/roles.py — same values as
+        # migration 0010, needed again here after a simulator --reset truncates them).
+        perms: dict[str, Permission] = {}
+        for code, name in PERMISSIONS.items():
             perm = db.execute(select(Permission).where(Permission.code == code)).scalar_one_or_none()
             if perm is None:
                 perm = Permission(name=name, code=code)
                 db.add(perm)
                 db.flush()
-            already_granted = db.execute(
-                select(GroupPermission).where(
-                    GroupPermission.group_id == admin_group.id,
-                    GroupPermission.permission_id == perm.id,
-                )
-            ).scalar_one_or_none()
-            if already_granted is None:
-                db.add(GroupPermission(group_id=admin_group.id, permission_id=perm.id))
+            perms[code] = perm
+
+        groups: dict[str, Group] = {}
+        for group_name, codes in GROUPS.items():
+            group = db.execute(select(Group).where(Group.name == group_name)).scalar_one_or_none()
+            if group is None:
+                group = Group(name=group_name)
+                db.add(group)
+                db.flush()
+            groups[group_name] = group
+            for code in codes:
+                already_granted = db.execute(
+                    select(GroupPermission).where(
+                        GroupPermission.group_id == group.id,
+                        GroupPermission.permission_id == perms[code].id,
+                    )
+                ).scalar_one_or_none()
+                if already_granted is None:
+                    db.add(GroupPermission(group_id=group.id, permission_id=perms[code].id))
+        admin_group = groups["Administrador"]
 
         admin_user = db.execute(
             select(User).where(User.username == ADMIN_USERNAME)
@@ -70,6 +73,7 @@ def seed() -> None:
         if admin_user is None:
             admin_user = User(
                 username=ADMIN_USERNAME,
+                full_name="Administrador",
                 email="admin@commercia.local",
                 password_hash=hash_password(ADMIN_PASSWORD),
                 is_superuser=True,
