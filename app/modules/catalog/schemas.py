@@ -58,6 +58,8 @@ class CategoryCreate(BaseModel):
 class CategoryUpdate(BaseModel):
     name: str | None = None
     department_id: int | None = None
+    # "active" reactivates; "inactive" follows the same rule as DELETE (no active products)
+    status: RecordStatus | None = None
 
 
 class CategoryRead(ORMModel):
@@ -65,6 +67,7 @@ class CategoryRead(ORMModel):
     name: str
     department_id: int
     company_id: int
+    status: RecordStatus
     created_at: datetime
     updated_at: datetime
 

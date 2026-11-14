@@ -120,7 +120,23 @@ def update_category(
     accessible: set[int] = Depends(get_accessible_filial_ids),
 ) -> CategoryRead:
     category = service.get_category_or_404(db, category_id, accessible)
-    return service.update_category(db, category, data.name, data.department_id)
+    return service.update_category(db, category, data.name, data.department_id, data.status)
+
+
+@router.delete(
+    "/categories/{category_id}",
+    response_model=CategoryRead,
+    dependencies=_EDIT_PRODUCTS,
+)
+def deactivate_category(
+    category_id: int,
+    db: Session = Depends(get_db),
+    accessible: set[int] = Depends(get_accessible_filial_ids),
+) -> CategoryRead:
+    """Deactivates (status=inactive) — never deletes. 409 while the category still has
+    active products. The app receives it with status "inactive" on its next pull."""
+    category = service.get_category_or_404(db, category_id, accessible)
+    return service.deactivate_category(db, category)
 
 
 # ---------------------------------------------------------------------

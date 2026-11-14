@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException, status
@@ -62,7 +62,7 @@ def create_department(db: Session, name: str) -> Department:
 
 
 # ---------------------------------------------------------------------
-# categories — per filial, no delete (no status column, would break on FK)
+# categories — per filial; "delete" = deactivate (status), only when no active product uses it
 # ---------------------------------------------------------------------
 
 
@@ -111,9 +111,39 @@ def get_category_or_404(db: Session, category_id: int, filial_ids: set[int]) -> 
     return category
 
 
+def _ensure_no_active_products(db: Session, category: Category) -> None:
+    active = db.scalar(
+        select(func.count()).select_from(Product).where(
+            Product.category_id == category.id, Product.status == RecordStatus.ACTIVE
+        )
+    ) or 0
+    if active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Category has {active} active product(s) — move or deactivate them first",
+        )
+
+
+def deactivate_category(db: Session, category: Category) -> Category:
+    if category.status != RecordStatus.INACTIVE:
+        _ensure_no_active_products(db, category)
+        category.status = RecordStatus.INACTIVE
+        db.commit()
+        db.refresh(category)
+    return category
+
+
 def update_category(
-    db: Session, category: Category, name: str | None, department_id: int | None
+    db: Session,
+    category: Category,
+    name: str | None,
+    department_id: int | None,
+    new_status: RecordStatus | None = None,
 ) -> Category:
+    if new_status == RecordStatus.INACTIVE and category.status != RecordStatus.INACTIVE:
+        _ensure_no_active_products(db, category)
+    if new_status is not None:
+        category.status = new_status
     if department_id is not None:
         if db.get(Department, department_id) is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department not found")
@@ -203,6 +233,8 @@ def _validate_category_for_filial(db: Session, category_id: int, filial_id: int)
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Category does not belong to this filial",
         )
+    if category.status != RecordStatus.ACTIVE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Category is inactive")
 
 
 def create_product(db: Session, filial_id: int, created_by_id: int, data: ProductCreate) -> Product:
@@ -236,7 +268,7 @@ def create_product(db: Session, filial_id: int, created_by_id: int, data: Produc
 
 
 def update_product(db: Session, product: Product, data: ProductUpdate) -> Product:
-    if data.category_id is not None:
+    if data.category_id is not None and data.category_id != product.category_id:
         _validate_category_for_filial(db, data.category_id, product.filial_id)
         product.category_id = data.category_id
 
@@ -283,12 +315,14 @@ def get_product_costs_bulk(db: Session, product_ids: list[int]) -> dict[int, Pro
 
 
 def set_product_cost(db: Session, product_id: int, cost_value: Decimal) -> ProductCost:
+    now = datetime.now(timezone.utc)  # a manual cost is "as of now" — only a newer purchase replaces it
     cost = get_product_cost(db, product_id)
     if cost is None:
-        cost = ProductCost(product_id=product_id, cost_value=cost_value)
+        cost = ProductCost(product_id=product_id, cost_value=cost_value, effective_at=now)
         db.add(cost)
     else:
         cost.cost_value = cost_value
+        cost.effective_at = now
     db.commit()
     db.refresh(cost)
     return cost
@@ -367,7 +401,7 @@ def set_price(
         # (the DB rejects it: ck_prices_date_range) — reject it here as a clean 422.
         if current.start_date is not None and effective_start < current.start_date:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=422,
                 detail=f"start_date {effective_start} is before the current price's start "
                 f"({current.start_date}) — a new price can only start on or after it",
             )

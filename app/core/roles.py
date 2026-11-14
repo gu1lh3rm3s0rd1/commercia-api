@@ -15,10 +15,12 @@ PERMISSIONS: dict[str, str] = {
     "clients.edit": "Gerenciar clientes",
     "orders.manage": "Gerenciar vendas",
     "audit.view": "Consultar log de auditoria",
+    "purchases.manage": "Gerenciar compras e fornecedores",
 }
 
 GROUPS: dict[str, tuple[str, ...]] = {
-    "Administrador": ("users.manage", "products.edit", "clients.edit", "orders.manage", "audit.view"),
-    "Gerente": ("products.edit", "clients.edit", "orders.manage"),
+    "Administrador": ("users.manage", "products.edit", "clients.edit", "orders.manage", "audit.view",
+                      "purchases.manage"),
+    "Gerente": ("products.edit", "clients.edit", "orders.manage", "purchases.manage"),
     "Vendedor": ("orders.manage", "clients.edit"),
 }

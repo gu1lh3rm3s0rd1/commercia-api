@@ -1,12 +1,13 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import PaymentMethod
 from app.modules.catalog.schemas import CategoryRead, DepartmentRead, Money, PriceRead, ProductRead, StockRead
+from app.modules.purchases.schemas import INVOICE_KEY_PATTERN, PurchaseItemCreate
 from app.modules.sales.schemas import OrderItemCreate
 
 CLOCK_TOLERANCE = timedelta(minutes=5)
@@ -44,10 +45,47 @@ class SyncSaleCreate(BaseModel):
         return value
 
 
-class PushRequest(BaseModel):
+class SyncPurchaseCreate(BaseModel):
+    """One purchase registered offline on the app (goods received at the store). Same
+    idempotency model as SyncSaleCreate: client_reference + occurred_at (with UTC offset,
+    not in the future). It's created ALREADY RECEIVED: stock in at sync time; the product's
+    cost changes only if this purchase is the latest one (by occurred_at)."""
+
     model_config = ConfigDict(extra="forbid")
 
-    sales: list[SyncSaleCreate] = Field(min_length=1)
+    client_reference: UUID
+    supplier_id: int
+    occurred_at: AwareDatetime
+    items: list[PurchaseItemCreate] = Field(min_length=1)
+    discount: Money = Decimal("0")
+    freight: Money = Decimal("0")
+    invoice_number: str | None = Field(None, min_length=1, max_length=20)
+    invoice_key: str | None = Field(None, pattern=INVOICE_KEY_PATTERN)
+    issued_at: date | None = None
+    notes: str | None = Field(None, max_length=1000)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _not_in_the_future(cls, value: datetime) -> datetime:
+        if value > datetime.now(timezone.utc) + CLOCK_TOLERANCE:
+            raise ValueError("occurred_at must not be in the future")
+        return value
+
+
+class PushRequest(BaseModel):
+    """At least one sale or one purchase. `purchases` is optional (added 2026-11-14): an
+    app that only sends sales keeps working unchanged."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sales: list[SyncSaleCreate] = []
+    purchases: list[SyncPurchaseCreate] = []
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> "PushRequest":
+        if not self.sales and not self.purchases:
+            raise ValueError("send at least one sale or purchase")
+        return self
 
 
 class PushResultItem(BaseModel):
@@ -59,11 +97,13 @@ class PushResultItem(BaseModel):
     client_reference: UUID
     status: Literal["created", "duplicate", "conflict", "rejected"]
     order_id: int | None = None
+    purchase_id: int | None = None  # set in the `purchases` results
     reason: str | None = None
 
 
 class PushResponse(BaseModel):
-    results: list[PushResultItem]
+    results: list[PushResultItem]  # one per sale, in the order sent
+    purchases: list[PushResultItem] = []  # one per purchase, in the order sent
 
 
 # ---------------------------------------------------------------------
@@ -86,6 +126,28 @@ class SyncUserRead(BaseModel):
     is_superuser: bool
 
 
+class SyncPersonRead(BaseModel):
+    """Everyone the app may pick in a sale (role client) or, later, a purchase (role supplier).
+    Inactive people are sent too, so the app can hide them. No addresses (not used offline)."""
+
+    model_config = {"from_attributes": True}
+
+    id: int
+    person_type: str
+    roles: list[str]
+    display_name: str
+    first_name: str | None
+    last_name: str | None
+    corporate_name: str | None
+    trade_name: str | None
+    cpf: str | None
+    cnpj: str | None
+    email: str | None
+    phone: str | None
+    status: str
+    updated_at: datetime
+
+
 class PullResponse(BaseModel):
     synced_at: datetime
     departments: list[DepartmentRead]
@@ -97,3 +159,6 @@ class PullResponse(BaseModel):
     # updated_at, and a user losing access to the filial is a deleted user_companies row,
     # which an incremental pull could never express. The app replaces its local table.
     users: list[SyncUserRead]
+    # Incremental like products: changed since last_synced_at (all of them on a first sync).
+    # The app upserts by id. Added 2026-11-14 (Etapa 2 of clients → people).
+    people: list[SyncPersonRead] = []

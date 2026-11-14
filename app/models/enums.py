@@ -8,6 +8,11 @@ class RecordStatus(str, enum.Enum):
     INACTIVE = "inactive"
 
 
+class PersonType(str, enum.Enum):
+    INDIVIDUAL = "individual"  # pessoa física — CPF
+    COMPANY = "company"  # pessoa jurídica — CNPJ
+
+
 class OrderStatus(str, enum.Enum):
     PENDING = "pending"
     PAID = "paid"
@@ -28,6 +33,13 @@ class StockMovementReason(str, enum.Enum):
     LOSS = "loss"
     RETURN = "return"
     RESTOCK = "restock"
+    PURCHASE = "purchase"  # a received purchase (migration 0015); never through the manual adjustment
+
+
+class PurchaseStatus(str, enum.Enum):
+    PENDING = "pending"  # ordered / registered, stock not in yet
+    RECEIVED = "received"  # goods arrived: stock in, cost updated
+    CANCELLED = "cancelled"
 
 
 def pg_enum(enum_cls: type[enum.Enum], name: str) -> PgEnum:

@@ -39,7 +39,7 @@ def answer(fn: Callable, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except queries.InvalidPeriod as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        raise HTTPException(422, detail=str(exc)) from exc
     except LookupError as exc:  # EntityNotFound, and NoForecast for the forecast routes
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -91,7 +91,7 @@ def sales_compare(
     entity = answer(queries.resolve_entity, db, filial_id, level, entity_id)
     start, end = answer(queries.resolve_period, db, filial_id, start_date, end_date)
     if (compare_start_date is None) != (compare_end_date is None):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="pass both compare dates or neither")
+        raise HTTPException(422, detail="pass both compare dates or neither")
     if compare_start_date is not None:
         answer(queries.resolve_period, db, filial_id, compare_start_date, compare_end_date)
     result = queries.sales_compare(db, filial_id, entity, start, end, compare_start_date, compare_end_date)

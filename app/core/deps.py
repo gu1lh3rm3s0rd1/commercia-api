@@ -73,24 +73,27 @@ def get_scoped_filial_required(
     return filial_id
 
 
+def has_permission(db: Session, user: User, code: str) -> bool:
+    """A superuser always has it; everyone else needs it through one of their groups."""
+    if user.is_superuser:
+        return True
+    stmt = (
+        select(Permission.code)
+        .join(GroupPermission, GroupPermission.permission_id == Permission.id)
+        .join(UserGroup, UserGroup.group_id == GroupPermission.group_id)
+        .where(UserGroup.user_id == user.id, Permission.code == code)
+    )
+    return db.execute(stmt).first() is not None
+
+
 def require_permission(code: str):
-    """Dependency factory: Depends(require_permission("products.edit")).
-    A superuser always passes; everyone else needs the permission via one of their groups."""
+    """Dependency factory: Depends(require_permission("products.edit"))."""
 
     def _checker(
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> User:
-        if user.is_superuser:
-            return user
-
-        stmt = (
-            select(Permission.code)
-            .join(GroupPermission, GroupPermission.permission_id == Permission.id)
-            .join(UserGroup, UserGroup.group_id == GroupPermission.group_id)
-            .where(UserGroup.user_id == user.id, Permission.code == code)
-        )
-        if db.execute(stmt).first() is None:
+        if not has_permission(db, user, code):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing permission")
         return user
 

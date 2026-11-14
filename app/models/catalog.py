@@ -30,6 +30,11 @@ class Category(Base):
     name: Mapped[str] = mapped_column(String(120))
     department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"))
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+    # "delete" = inactive (migration 0011, RF04): products point at it, and the mobile
+    # pull is incremental — a hard-deleted row would never leave the app's local table.
+    status: Mapped[RecordStatus] = mapped_column(
+        pg_enum(RecordStatus, "record_status"), default=RecordStatus.ACTIVE
+    )
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
@@ -82,6 +87,9 @@ class ProductCost(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
     cost_value: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    # when the current cost is from: a manual PUT stamps now; a received purchase stamps when
+    # the purchase happened — an older purchase never overwrites a newer cost (migration 0015)
+    effective_at: Mapped[datetime | None] = mapped_column(default=None)
     # onupdate: the incremental /sync/pull finds changed costs by this column
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 

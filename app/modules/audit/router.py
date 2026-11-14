@@ -54,7 +54,7 @@ def list_audit_logs(
     caller: User = Depends(require_permission("audit.view")),
 ) -> Page[AuditLogRead]:
     if start_date and end_date and start_date > end_date:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="start_date must be <= end_date")
+        raise HTTPException(status_code=422, detail="start_date must be <= end_date")
     if filial_id is not None and filial_id not in accessible:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this filial")
 

@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # e qual preço está vigente. As datas continuam gravadas e devolvidas em UTC.
     app_timezone: str = "America/Sao_Paulo"
 
+    # Chatbot (Fase 11, RF08). Sem chave a API sobe normalmente e só POST /chat responde 503.
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.5-flash-lite"
+    # Tentados em ordem quando o modelo principal está sobrecarregado (503/504) — picos de
+    # demanda no Google são comuns. Lista separada por vírgula; vazia = sem reserva.
+    gemini_fallback_models: str = "gemini-3.6-flash,gemini-3.1-flash-lite"
+    chat_rate_limit_per_minute: int = 20
+
     @property
     def database_url(self) -> URL:
         """Built dynamically from the individual credential fields above — never a
@@ -44,6 +52,11 @@ class Settings(BaseSettings):
             database=self.db_name,
             query={"sslmode": self.db_sslmode},
         )
+
+    @property
+    def gemini_models(self) -> list[str]:
+        extra = [m.strip() for m in self.gemini_fallback_models.split(",") if m.strip()]
+        return [self.gemini_model, *[m for m in extra if m != self.gemini_model]]
 
     @property
     def cors_origin_list(self) -> list[str]:

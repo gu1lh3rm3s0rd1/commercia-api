@@ -3,7 +3,7 @@
 Two ways a row reaches `audit_logs`, both inside the transaction of the operation itself
 (a rollback drops the log too; a commit always carries it):
 
-1. Automatic — an `after_flush` listener inspects every catalog/client/order object the
+1. Automatic — an `after_flush` listener inspects every catalog/person/order object the
    flush created, changed or deleted and logs it, with the changed fields as
    {"field": [old, new]}. No service has to remember to call anything, so a new write
    path can't silently skip the trail.
@@ -27,8 +27,9 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditLog
 from app.models.catalog import Category, Department, Price, Product, ProductCost
-from app.models.enums import OrderStatus, RecordStatus
-from app.models.sales import Client, ClientAddress, Order, StockMovement
+from app.models.enums import OrderStatus, PurchaseStatus, RecordStatus
+from app.models.purchases import Purchase
+from app.models.sales import Order, Person, PersonAddress, StockMovement
 from app.models.user import User
 
 _ACTOR = "audit_actor"
@@ -44,9 +45,10 @@ _AUDITED: dict[type, str] = {
     Price: "price",
     ProductCost: "cost",
     StockMovement: "stock",
-    Client: "client",
-    ClientAddress: "client_address",
+    Person: "person",  # was "client" before migration 0013 (older log rows keep it)
+    PersonAddress: "person_address",
     Order: "order",
+    Purchase: "purchase",
 }
 _SKIP_FIELDS = {"id", "created_at", "updated_at", "created_by_id"}
 
@@ -139,8 +141,8 @@ def _filial_of(session: Session, obj) -> int | None:
         if value is not None:
             return value
     with session.no_autoflush:
-        if isinstance(obj, ClientAddress):
-            parent = session.get(Client, obj.client_id)
+        if isinstance(obj, PersonAddress):
+            parent = session.get(Person, obj.person_id)
             return parent.filial_id if parent is not None else None
         if isinstance(obj, ProductCost):
             parent = session.get(Product, obj.product_id)
@@ -155,6 +157,11 @@ def _update_action(entity: str, obj, changes: dict[str, list[Any]]) -> str:
             return "order.pay"
         if new_status == OrderStatus.CANCELLED.value:
             return "order.cancel"
+    if isinstance(obj, Purchase):
+        if new_status == PurchaseStatus.RECEIVED.value:
+            return "purchase.receive"
+        if new_status == PurchaseStatus.CANCELLED.value:
+            return "purchase.cancel"
     if new_status == RecordStatus.INACTIVE.value:
         return f"{entity}.deactivate"
     return f"{entity}.update"
@@ -164,6 +171,9 @@ def _create_details(obj) -> dict[str, Any]:
     if isinstance(obj, Order):
         return {k: getattr(obj, k) for k in
                 ("client_id", "total", "discount", "payment_method", "client_reference", "occurred_at")}
+    if isinstance(obj, Purchase):
+        return {k: getattr(obj, k) for k in
+                ("supplier_id", "total", "discount", "freight", "invoice_number", "client_reference", "occurred_at")}
     return _snapshot(obj)
 
 
@@ -175,8 +185,8 @@ def _log_flushed_changes(session: Session, _flush_context) -> None:
         if entity is None:
             continue
         if isinstance(obj, StockMovement):
-            if obj.order_item_id is not None:  # a sale or its cancellation — logged as the order
-                continue
+            if obj.order_item_id is not None or obj.purchase_item_id is not None:
+                continue  # a sale/purchase or its cancellation — logged as the order/purchase
             action = "stock.adjust"
         elif isinstance(obj, (Price, ProductCost)):
             action = f"{entity}.set"

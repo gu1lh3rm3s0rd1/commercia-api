@@ -6,4 +6,7 @@ __pycache__/
 *.egg-info/
 
 
-*.md
+*.mdeval_chat_results*.json
+*.md 
+
+docs/*

@@ -1,8 +1,8 @@
 """Integration tests for the Fase 3 clients module — require a real Postgres with the
 schema applied and scripts/seed_admin.py already run. Skipped automatically otherwise.
 
-cpf/email uniqueness is GLOBAL (not per-filial, confirmed 2026-09-17), so tests use
-random values to stay re-runnable against the real dev DB.
+Since migration 0013 (clients → people): CPF is unique PER STORE and e-mail isn't unique
+(decided 2026-11-14). Tests still use random values to stay re-runnable on the dev DB.
 """
 
 import random
@@ -120,7 +120,8 @@ def test_duplicate_cpf_rejected(client, admin_headers):
     assert duplicate.status_code == 409
 
 
-def test_duplicate_email_rejected(client, admin_headers):
+def test_same_email_is_allowed(client, admin_headers):
+    """E-mail isn't a document: two people may share one (a couple, a family business)."""
     filial_id = _admin_filial_id(client, admin_headers)
     email = _unique_email()
 
@@ -136,7 +137,7 @@ def test_duplicate_email_rejected(client, admin_headers):
         json={"first_name": "C", "last_name": "D", "email": email, "cpf": _unique_cpf()},
         headers=admin_headers,
     )
-    assert duplicate.status_code == 409
+    assert duplicate.status_code == 201
 
 
 def test_invalid_cpf_format_rejected(client, admin_headers):

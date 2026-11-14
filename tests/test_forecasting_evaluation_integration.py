@@ -74,10 +74,25 @@ def _drop_run(run_id) -> None:
         conn.execute(text("DELETE FROM forecasting.forecast_runs WHERE id = :r"), {"r": run_id})
 
 
+def _latest_full_week_cut(conn, filial_id, data_end):
+    """The latest train_end whose next 7 days all have sales. A dev DB can have holes
+    (simulated history ends, then a few manual sales days later), so don't assume the
+    week right before data_end is complete."""
+    days = set(conn.execute(
+        text("SELECT DISTINCT sale_date FROM analytics.daily_sales WHERE filial_id = :f AND sale_date <= :e"),
+        {"f": filial_id, "e": data_end},
+    ).scalars().all())
+    cut = data_end - timedelta(days=10)
+    while not all(cut + timedelta(days=i) in days for i in range(1, 8)):
+        cut -= timedelta(days=1)
+        assert cut > data_end - timedelta(days=400), "no 7 consecutive days with sales in the dev DB"
+    return cut
+
+
 def test_scoring_math_on_a_known_10_percent_over_forecast(data):
     filial_id = data["filial_id"]
-    cut = data["data_end"] - timedelta(days=10)
     with engine.begin() as conn:
+        cut = _latest_full_week_cut(conn, filial_id, data["data_end"])
         actual = dict(conn.execute(
             text("""SELECT sale_date, sum(quantity) FROM analytics.daily_sales
                     WHERE filial_id = :f AND sale_date BETWEEN :a AND :b GROUP BY 1"""),

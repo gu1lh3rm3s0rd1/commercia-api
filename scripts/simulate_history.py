@@ -627,7 +627,7 @@ class Simulation:
         with engine.begin() as conn:
             conn.execute(text("UPDATE prices SET created_at = :ts WHERE id > :m"), {"ts": morning, "m": marks["prices"]})
             if self.client_ts:
-                conn.execute(text("UPDATE clients SET created_at = :ts WHERE id = :id"),
+                conn.execute(text("UPDATE people SET created_at = :ts, updated_at = :ts WHERE id = :id"),
                              [{"ts": ts, "id": cid} for cid, ts in self.client_ts.items()])
             # orders: synced ones were written 1–4 min after the sale (before pay/cancel, >= 5 min); online ones at the sale moment
             conn.execute(text("""

@@ -148,6 +148,12 @@ def _totals(db: Session, filial_id: int, entity: Entity, start: date, end: date)
     }
 
 
+def sales_totals(db: Session, filial_id: int, entity: Entity, start: date, end: date) -> dict:
+    """Quantity / revenue / cost / margin of one entity over one period (the chat's
+    get_product_sales tool)."""
+    return _totals(db, filial_id, entity, start, end)
+
+
 def sales_compare(
     db: Session, filial_id: int, entity: Entity, start: date, end: date,
     compare_start: date | None = None, compare_end: date | None = None,

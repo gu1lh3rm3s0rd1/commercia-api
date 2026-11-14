@@ -18,8 +18,9 @@ pytestmark = requires_db
 
 PAST = "2020-01-01"
 PROFILE_CODES = {
-    "Administrador": {"users.manage", "products.edit", "clients.edit", "orders.manage", "audit.view"},
-    "Gerente": {"products.edit", "clients.edit", "orders.manage"},
+    "Administrador": {"users.manage", "products.edit", "clients.edit", "orders.manage", "audit.view",
+                      "purchases.manage"},
+    "Gerente": {"products.edit", "clients.edit", "orders.manage", "purchases.manage"},
     "Vendedor": {"orders.manage", "clients.edit"},
 }
 

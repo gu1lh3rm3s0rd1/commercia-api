@@ -2,23 +2,50 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Computed, ForeignKey, Numeric, String, Uuid
+from sqlalchemy import CheckConstraint, Computed, ForeignKey, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from app.db.base import Base
-from app.models.enums import OrderStatus, PaymentMethod, RecordStatus, StockMovementReason, pg_enum
+from app.models.enums import OrderStatus, PaymentMethod, PersonType, RecordStatus, StockMovementReason, pg_enum
 
 
-class Client(Base):
-    __tablename__ = "clients"
-    __table_args__ = (CheckConstraint("cpf ~ '^[0-9]{11}$'", name="ck_clients_cpf_format"),)
+class Person(Base):
+    """Every registration of a store — clients, suppliers and whatever role comes next
+    (migration 0013, was `clients`). `roles` says what the person is to the store, several
+    at once allowed (a farmer who supplies eggs and also buys); the valid values live in
+    app/core/people.py, so a new role needs no migration.
+
+    individual (pessoa física) → cpf + first/last name; company (pessoa jurídica) → cnpj +
+    corporate_name (trade_name optional) — enforced by ck_people_document. CPF/CNPJ are
+    unique per store (UC004), not across stores: the same supplier serves many businesses."""
+
+    __tablename__ = "people"
+    __table_args__ = (
+        CheckConstraint("cpf ~ '^[0-9]{11}$'", name="ck_people_cpf_format"),
+        CheckConstraint("cnpj ~ '^[0-9]{14}$'", name="ck_people_cnpj_format"),
+        CheckConstraint("cardinality(roles) >= 1", name="ck_people_roles_not_empty"),
+        CheckConstraint(
+            "(person_type = 'individual' AND cpf IS NOT NULL AND cnpj IS NULL"
+            " AND first_name IS NOT NULL AND last_name IS NOT NULL)"
+            " OR (person_type = 'company' AND cnpj IS NOT NULL AND cpf IS NULL AND corporate_name IS NOT NULL)",
+            name="ck_people_document",
+        ),
+        UniqueConstraint("filial_id", "cpf", name="uq_people_filial_cpf"),
+        UniqueConstraint("filial_id", "cnpj", name="uq_people_filial_cnpj"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    first_name: Mapped[str] = mapped_column(String(120))
-    last_name: Mapped[str] = mapped_column(String(120))
-    email: Mapped[str] = mapped_column(String(160), unique=True)
-    cpf: Mapped[str] = mapped_column(String(11), unique=True)
+    person_type: Mapped[PersonType] = mapped_column(pg_enum(PersonType, "person_type"), default=PersonType.INDIVIDUAL)
+    roles: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    first_name: Mapped[str | None] = mapped_column(String(120), default=None)
+    last_name: Mapped[str | None] = mapped_column(String(120), default=None)
+    corporate_name: Mapped[str | None] = mapped_column(String(160), default=None)
+    trade_name: Mapped[str | None] = mapped_column(String(160), default=None)
+    email: Mapped[str | None] = mapped_column(String(160), default=None)
+    cpf: Mapped[str | None] = mapped_column(String(11), default=None)
+    cnpj: Mapped[str | None] = mapped_column(String(14), default=None)
     birth_date: Mapped[date | None] = mapped_column(default=None)
     phone: Mapped[str | None] = mapped_column(String(20), default=None)
     status: Mapped[RecordStatus] = mapped_column(
@@ -27,16 +54,28 @@ class Client(Base):
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     filial_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+    @property
+    def display_name(self) -> str:
+        if self.person_type == PersonType.COMPANY:
+            return self.trade_name or self.corporate_name or ""
+        return f"{self.first_name or ''} {self.last_name or ''}".strip()
 
 
-class ClientAddress(Base):
-    __tablename__ = "client_addresses"
+def person_display_name():
+    """SQL version of Person.display_name, for reports that select names in bulk."""
+    return func.coalesce(Person.trade_name, Person.corporate_name, Person.first_name + " " + Person.last_name)
+
+
+class PersonAddress(Base):
+    __tablename__ = "person_addresses"
     __table_args__ = (
-        CheckConstraint("zip_code ~ '^[0-9]{8}$'", name="ck_client_addresses_zip_format"),
+        CheckConstraint("zip_code ~ '^[0-9]{8}$'", name="ck_person_addresses_zip_format"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"))
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"))
     street: Mapped[str] = mapped_column(String(200))
     number: Mapped[str | None] = mapped_column(String(20), default=None)
     complement: Mapped[str | None] = mapped_column(String(120), default=None)
@@ -64,7 +103,7 @@ class Order(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"))
+    client_id: Mapped[int] = mapped_column(ForeignKey("people.id"))  # a person with the "client" role
     total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     discount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     payment_method: Mapped[PaymentMethod] = mapped_column(pg_enum(PaymentMethod, "payment_method"))
@@ -144,5 +183,9 @@ class StockMovement(Base):
     resulting_qty: Mapped[int]
     order_item_id: Mapped[int | None] = mapped_column(
         ForeignKey("order_items.id", ondelete="SET NULL"), default=None
+    )
+    # set for a received purchase (reason 'purchase') or its cancellation — migration 0015
+    purchase_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("purchase_items.id", ondelete="SET NULL"), default=None
     )
     occurred_at: Mapped[datetime] = mapped_column(server_default=func.now())

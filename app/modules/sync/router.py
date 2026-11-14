@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_user, get_scoped_filial_required, require_permission
+from app.core.deps import get_current_user, get_scoped_filial_required, has_permission, require_permission
 from app.db.session import get_db
 from app.models.user import User
 from app.modules.sync import service
@@ -21,8 +21,11 @@ def push(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> PushResponse:
-    results = service.push_batch(db, filial_id, user.id, data.sales)
-    return PushResponse(results=results)
+    results = service.push_batch(db, filial_id, user.id, data.sales) if data.sales else []
+    purchases = (service.push_purchases(db, filial_id, user.id, data.purchases,
+                                        allowed=has_permission(db, user, "purchases.manage"))
+                 if data.purchases else [])
+    return PushResponse(results=results, purchases=purchases)
 
 
 @router.get("/pull", response_model=PullResponse)

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.models.catalog import Product, ProductCost
 from app.models.enums import OrderStatus, RecordStatus, StockMovementReason
-from app.models.sales import Client, Order, OrderItem, StockMovement
-from app.core.timezone import local_today, to_local
+from app.core.people import CLIENT
+from app.models.sales import Order, OrderItem, Person, StockMovement
+from app.core.timezone import local_day_bounds, local_today, to_local
 from app.modules.catalog.service import get_price_at, lock_or_create_stock, lock_stocks
 from app.modules.sales.schemas import OrderCreate
 
@@ -18,9 +19,10 @@ from app.modules.sales.schemas import OrderCreate
 # ---------------------------------------------------------------------
 
 
-def _get_client_in_filial(db: Session, client_id: int, filial_id: int) -> Client:
-    client = db.get(Client, client_id)
-    if client is None or client.filial_id != filial_id:
+def _get_client_in_filial(db: Session, client_id: int, filial_id: int) -> Person:
+    client = db.get(Person, client_id)
+    # a supplier that isn't also a client can't be the buyer of a sale
+    if client is None or client.filial_id != filial_id or CLIENT not in client.roles:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Client not found in this filial"
         )
@@ -61,12 +63,40 @@ def get_order_with_items(db: Session, order_id: int, filial_ids: set[int]) -> tu
     return order, get_order_items(db, order_id)
 
 
+def get_order_items_bulk(db: Session, order_ids: list[int]) -> dict[int, list[OrderItem]]:
+    """Items of a whole page of orders in one query (was one query per order)."""
+    result: dict[int, list[OrderItem]] = {oid: [] for oid in order_ids}
+    if order_ids:
+        rows = db.execute(
+            select(OrderItem).where(OrderItem.order_id.in_(order_ids)).order_by(OrderItem.id)
+        ).scalars().all()
+        for item in rows:
+            result[item.order_id].append(item)
+    return result
+
+
 def list_orders(
-    db: Session, filial_ids: set[int], status_filter: OrderStatus | None, limit: int, offset: int
+    db: Session,
+    filial_ids: set[int],
+    status_filter: OrderStatus | None,
+    limit: int,
+    offset: int,
+    client_id: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> tuple[list[Order], int]:
+    """start_date/end_date: business-timezone days (inclusive) of when the sale really
+    happened — occurred_at for offline sales, created_at otherwise (same rule as reports)."""
     base = select(Order).where(Order.filial_id.in_(filial_ids))
     if status_filter is not None:
         base = base.where(Order.status == status_filter)
+    if client_id is not None:
+        base = base.where(Order.client_id == client_id)
+    effective = func.coalesce(Order.occurred_at, Order.created_at)
+    if start_date is not None:
+        base = base.where(effective >= local_day_bounds(start_date)[0])
+    if end_date is not None:
+        base = base.where(effective < local_day_bounds(end_date)[1])
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
     items = db.execute(base.order_by(Order.created_at.desc(), Order.id.desc()).limit(limit).offset(offset)).scalars().all()
     return list(items), total

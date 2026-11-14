@@ -8,13 +8,23 @@ from sqlalchemy.orm import Session
 from app.core import audit
 from app.core.timezone import local_today, to_local
 from app.models.catalog import Category, Department, Price, Product, ProductCost, Stock
-from app.models.sales import Order
+from app.models.purchases import Purchase
+from app.models.sales import Order, Person
 from app.models.user import User, UserCompany
 from app.modules.catalog import service as catalog_service
 from app.modules.catalog.schemas import CategoryRead, DepartmentRead, PriceRead, StockRead
 from app.modules.sales import service as sales_service
 from app.modules.sales.schemas import OrderCreate
-from app.modules.sync.schemas import PullResponse, PushResultItem, SyncSaleCreate, SyncUserRead
+from app.modules.purchases import service as purchases_service
+from app.modules.purchases.schemas import PurchaseCreate
+from app.modules.sync.schemas import (
+    PullResponse,
+    PushResultItem,
+    SyncPersonRead,
+    SyncPurchaseCreate,
+    SyncSaleCreate,
+    SyncUserRead,
+)
 
 # ---------------------------------------------------------------------
 # push
@@ -104,6 +114,72 @@ def push_batch(
 
 
 # ---------------------------------------------------------------------
+# push: purchases (same idempotency model as sales; always created received)
+# ---------------------------------------------------------------------
+
+
+def _same_purchase(db: Session, purchase: Purchase, sent: SyncPurchaseCreate) -> bool:
+    items = sorted((i.product_id, i.quantity, i.unit_cost) for i in purchases_service.get_items(db, purchase.id))
+    return (
+        purchase.supplier_id == sent.supplier_id
+        and purchase.discount == sent.discount
+        and purchase.freight == sent.freight
+        and purchase.occurred_at == sent.occurred_at
+        and items == sorted((i.product_id, i.quantity, i.unit_cost) for i in sent.items)
+    )
+
+
+def _existing_purchase_result(db: Session, existing: Purchase, filial_id: int, sent: SyncPurchaseCreate) -> PushResultItem:
+    ref = sent.client_reference
+    if existing.filial_id != filial_id:
+        return PushResultItem(client_reference=ref, status="conflict", reason="client_reference already used by another filial")
+    if not _same_purchase(db, existing, sent):
+        return PushResultItem(client_reference=ref, status="conflict", purchase_id=existing.id,
+                              reason="client_reference already used by a different purchase")
+    return PushResultItem(client_reference=ref, status="duplicate", purchase_id=existing.id)
+
+
+def _find_purchase_by_reference(db: Session, client_reference) -> Purchase | None:
+    return db.execute(select(Purchase).where(Purchase.client_reference == client_reference)).scalar_one_or_none()
+
+
+def push_purchase(db: Session, filial_id: int, user_id: int, sent: SyncPurchaseCreate) -> PushResultItem:
+    existing = _find_purchase_by_reference(db, sent.client_reference)
+    if existing is not None:
+        return _existing_purchase_result(db, existing, filial_id, sent)
+    data = PurchaseCreate(
+        supplier_id=sent.supplier_id, items=sent.items, discount=sent.discount, freight=sent.freight,
+        invoice_number=sent.invoice_number, invoice_key=sent.invoice_key, issued_at=sent.issued_at, notes=sent.notes,
+        receive=True,
+    )
+    try:
+        purchase, _ = purchases_service.create_purchase(db, filial_id, user_id, data,
+                                                        client_reference=sent.client_reference,
+                                                        occurred_at=sent.occurred_at)
+    except HTTPException as exc:
+        db.rollback()
+        return PushResultItem(client_reference=sent.client_reference, status="rejected", reason=str(exc.detail))
+    except IntegrityError:
+        db.rollback()
+        existing = _find_purchase_by_reference(db, sent.client_reference)
+        if existing is not None:
+            return _existing_purchase_result(db, existing, filial_id, sent)
+        raise
+    return PushResultItem(client_reference=sent.client_reference, status="created", purchase_id=purchase.id)
+
+
+def push_purchases(db: Session, filial_id: int, user_id: int, purchases: list[SyncPurchaseCreate],
+                   allowed: bool) -> list[PushResultItem]:
+    """allowed=False (user without purchases.manage): every purchase is rejected, the sales
+    of the same batch still go through."""
+    if not allowed:
+        return [PushResultItem(client_reference=p.client_reference, status="rejected",
+                               reason="Missing permission purchases.manage") for p in purchases]
+    audit.set_source(db, "sync")
+    return [push_purchase(db, filial_id, user_id, p) for p in purchases]
+
+
+# ---------------------------------------------------------------------
 # pull
 # ---------------------------------------------------------------------
 
@@ -173,6 +249,11 @@ def pull_changes(db: Session, filial_id: int, last_synced_at: datetime | None) -
     )
     users = db.execute(users_stmt).scalars().all()
 
+    people_stmt = select(Person).where(Person.filial_id == filial_id)
+    if since is not None:
+        people_stmt = people_stmt.where(Person.updated_at > since)
+    people = db.execute(people_stmt.order_by(Person.id)).scalars().all()
+
     return PullResponse(
         synced_at=snapshot_time,
         departments=[DepartmentRead.model_validate(d) for d in departments],
@@ -186,4 +267,5 @@ def pull_changes(db: Session, filial_id: int, last_synced_at: datetime | None) -
         prices=[PriceRead.model_validate(p) for p in prices],
         stocks=[StockRead.model_validate(s) for s in stocks],
         users=[SyncUserRead.model_validate(u) for u in users],
+        people=[SyncPersonRead.model_validate(x) for x in people],
     )

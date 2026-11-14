@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query, status
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import (
@@ -53,15 +55,23 @@ def create_order(
 def list_orders(
     filial_id: int | None = Depends(get_scoped_filial_optional),
     order_status: OrderStatus | None = Query(None, alias="status"),
+    client_id: int | None = Query(None, description="a client's purchase history (RF03)"),
+    start_date: date | None = Query(None, description="business-timezone day the sale happened, inclusive"),
+    end_date: date | None = Query(None, description="business-timezone day the sale happened, inclusive"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     accessible: set[int] = Depends(get_accessible_filial_ids),
     _user: User = Depends(get_current_user),
 ) -> Page[OrderRead]:
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=422, detail="start_date must be <= end_date")
     filial_ids = {filial_id} if filial_id is not None else accessible
-    orders, total = service.list_orders(db, filial_ids, order_status, limit, offset)
-    items_page = [_to_order_read(o, service.get_order_items(db, o.id)) for o in orders]
+    orders, total = service.list_orders(
+        db, filial_ids, order_status, limit, offset, client_id=client_id, start_date=start_date, end_date=end_date
+    )
+    items = service.get_order_items_bulk(db, [o.id for o in orders])
+    items_page = [_to_order_read(o, items[o.id]) for o in orders]
     return Page(items=items_page, total=total, limit=limit, offset=offset)
 
 

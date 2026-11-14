@@ -42,7 +42,7 @@ def get_forecast(
     _user: User = Depends(get_current_user),
 ) -> ForecastRead:
     if model is not None and model not in MODELS:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"model must be one of: {', '.join(MODELS)}")
+        raise HTTPException(422, detail=f"model must be one of: {', '.join(MODELS)}")
     run = service.pick_run(db, filial_id, target, model)
     if run is None:
         raise HTTPException(
@@ -91,7 +91,7 @@ def get_accuracy(
 
 def _check_model(model: str | None) -> None:
     if model is not None and model not in MODELS:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"model must be one of: {', '.join(MODELS)}")
+        raise HTTPException(422, detail=f"model must be one of: {', '.join(MODELS)}")
 
 
 @router.get("/compare", response_model=ForecastCompareRead)

@@ -8,7 +8,10 @@ from app.core.timezone import local_day_bounds, local_today, to_local
 from app.models.catalog import Category, Department, Product, ProductCost, Stock
 from app.models.company import Company
 from app.models.enums import OrderStatus, RecordStatus, StockMovementReason
-from app.models.sales import Client, Order, OrderItem, StockMovement
+from app.core.people import CLIENT
+from app.models.sales import Order, OrderItem, Person, StockMovement, person_display_name
+
+_IS_CLIENT = Person.roles.contains([CLIENT])
 from app.models.user import User
 from app.modules.dashboard.schemas import (
     ClientsTrendPoint,
@@ -85,9 +88,10 @@ def get_indicators(db: Session, filial_ids: set[int]) -> DashboardIndicators:
     new_clients_today = (
         db.scalar(
             select(func.count()).where(
-                Client.filial_id.in_(filial_ids),
-                Client.created_at >= today_start,
-                Client.created_at < today_end,
+                Person.filial_id.in_(filial_ids),
+                _IS_CLIENT,
+                Person.created_at >= today_start,
+                Person.created_at < today_end,
             )
         )
         or 0
@@ -226,23 +230,23 @@ def get_sales_by_client(
     total_revenue_col = func.coalesce(func.sum(Order.total), 0).label("total_revenue")
 
     base = (
-        select(Client.id, Client.first_name, Client.last_name, total_orders_col, total_revenue_col)
-        .join(Order, Order.client_id == Client.id)
+        select(Person.id, person_display_name().label("name"), total_orders_col, total_revenue_col)
+        .join(Order, Order.client_id == Person.id)
         .where(*conditions)
-        .group_by(Client.id)
+        .group_by(Person.id)
     )
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
 
-    rows = db.execute(base.order_by(total_revenue_col.desc(), Client.id).limit(limit).offset(offset)).all()
+    rows = db.execute(base.order_by(total_revenue_col.desc(), Person.id).limit(limit).offset(offset)).all()
 
     items = []
-    for client_id, first_name, last_name, total_orders, total_revenue in rows:
+    for client_id, name, total_orders, total_revenue in rows:
         average_ticket = (total_revenue / total_orders).quantize(Decimal("0.01")) if total_orders else Decimal("0.00")
         items.append(
             SalesByClientItem(
                 client_id=client_id,
-                client_name=f"{first_name} {last_name}",
+                client_name=name,
                 total_orders=total_orders,
                 total_revenue=total_revenue,
                 average_ticket=average_ticket,
@@ -704,10 +708,11 @@ def get_new_clients_trend(db: Session, filial_ids: set[int], days: int) -> list[
     _, window_end_dt = _day_bounds(today)
 
     rows = db.execute(
-        select(Client.created_at).where(
-            Client.filial_id.in_(filial_ids),
-            Client.created_at >= window_start_dt,
-            Client.created_at < window_end_dt,
+        select(Person.created_at).where(
+            Person.filial_id.in_(filial_ids),
+            _IS_CLIENT,
+            Person.created_at >= window_start_dt,
+            Person.created_at < window_end_dt,
         )
     ).all()
 
@@ -738,28 +743,29 @@ def get_inactive_clients(
     )
 
     base = (
-        select(Client.id, Client.first_name, Client.last_name, last_order_subq.c.last_order_at)
-        .select_from(Client)
-        .outerjoin(last_order_subq, last_order_subq.c.client_id == Client.id)
+        select(Person.id, person_display_name().label("name"), last_order_subq.c.last_order_at)
+        .select_from(Person)
+        .outerjoin(last_order_subq, last_order_subq.c.client_id == Person.id)
         .where(
-            Client.filial_id.in_(filial_ids),
+            Person.filial_id.in_(filial_ids),
+            _IS_CLIENT,
             or_(last_order_subq.c.last_order_at.is_(None), last_order_subq.c.last_order_at < cutoff),
         )
     )
 
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
     rows = db.execute(
-        base.order_by(last_order_subq.c.last_order_at.asc().nulls_first(), Client.id).limit(limit).offset(offset)
+        base.order_by(last_order_subq.c.last_order_at.asc().nulls_first(), Person.id).limit(limit).offset(offset)
     ).all()
 
     now = datetime.now(timezone.utc)
     items = []
-    for client_id, first_name, last_name, last_order_at in rows:
+    for client_id, name, last_order_at in rows:
         days_since = (now - last_order_at).days if last_order_at is not None else None
         items.append(
             InactiveClientItem(
                 client_id=client_id,
-                client_name=f"{first_name} {last_name}",
+                client_name=name,
                 last_order_at=last_order_at,
                 days_since_last_order=days_since,
             )
