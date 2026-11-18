@@ -181,7 +181,7 @@ def _receive(db: Session, purchase: Purchase, items: list[PurchaseItem], user_id
         cost = db.execute(select(ProductCost).where(ProductCost.product_id == product_id).with_for_update()).scalar_one_or_none()
         if cost is None:
             db.add(ProductCost(product_id=product_id, cost_value=landed, effective_at=happened_at))
-        elif cost.effective_at is None or happened_at >= cost.effective_at:
+        elif happened_at >= cost.effective_at:  # effective_at is NOT NULL (migration 0017)
             cost.cost_value = landed
             cost.effective_at = happened_at
         # else: a newer cost is already in place (this purchase happened before it)

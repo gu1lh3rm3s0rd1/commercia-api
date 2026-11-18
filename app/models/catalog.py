@@ -89,7 +89,7 @@ class ProductCost(Base):
     cost_value: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     # when the current cost is from: a manual PUT stamps now; a received purchase stamps when
     # the purchase happened — an older purchase never overwrites a newer cost (migration 0015)
-    effective_at: Mapped[datetime | None] = mapped_column(default=None)
+    effective_at: Mapped[datetime]  # NOT NULL since migration 0017
     # onupdate: the incremental /sync/pull finds changed costs by this column
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
