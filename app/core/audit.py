@@ -177,6 +177,18 @@ def _create_details(obj) -> dict[str, Any]:
     return _snapshot(obj)
 
 
+@event.listens_for(Session, "before_flush")
+def _stamp_stock_movement_author(session: Session, _flush_context, _instances) -> None:
+    """stock_movements.created_by_id (migration 0016) = the request's user, for every write
+    path (sale, cancellation, manual adjustment, purchase) without each one passing it."""
+    actor = session.info.get(_ACTOR)
+    if actor is None:
+        return
+    for obj in session.new:
+        if isinstance(obj, StockMovement) and obj.created_by_id is None:
+            obj.created_by_id = actor.id
+
+
 @event.listens_for(Session, "after_flush")
 def _log_flushed_changes(session: Session, _flush_context) -> None:
     rows = []

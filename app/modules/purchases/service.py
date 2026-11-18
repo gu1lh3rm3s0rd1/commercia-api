@@ -108,6 +108,13 @@ def create_purchase(db: Session, filial_id: int, user_id: int, data: PurchaseCre
     """client_reference/occurred_at only come from the mobile sync (which always receives)."""
     # Pass 1 — validate everything, write nothing.
     _get_supplier_in_filial(db, data.supplier_id, filial_id)
+    if data.invoice_key is not None:  # uq_purchases_filial_invoice_key (migration 0016)
+        same_invoice = db.execute(select(Purchase.id).where(
+            Purchase.filial_id == filial_id, Purchase.invoice_key == data.invoice_key,
+            Purchase.status != PurchaseStatus.CANCELLED)).scalar()
+        if same_invoice is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=f"NF-e already registered in this filial (purchase {same_invoice})")
     for product_id in {line.product_id for line in data.items}:
         _get_product_in_filial(db, product_id, filial_id)
     gross = [line.unit_cost * line.quantity for line in data.items]

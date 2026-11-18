@@ -11,6 +11,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # unique regardless of case: uq_users_username_lower / uq_users_email_lower (migration 0016)
     username: Mapped[str] = mapped_column(String(60), unique=True)
     full_name: Mapped[str] = mapped_column(String(120))  # RF01 "nome" (migration 0010)
     email: Mapped[str] = mapped_column(String(160), unique=True)

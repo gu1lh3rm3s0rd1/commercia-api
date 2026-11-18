@@ -165,7 +165,12 @@ class OrderItem(Base):
 class StockMovement(Base):
     """Historical fact, not derived from anything else — what Analytics/Forecasting will
     use to tell a real demand drop apart from a stock-out. Never update stocks.quantity
-    without writing the corresponding row here, in the same transaction."""
+    without writing the corresponding row here, in the same transaction.
+
+    Guaranteed by the DB since migration 0016: the reason matches the source (sale ⇒ an
+    order item, purchase ⇒ a purchase item, loss/return/restock ⇒ manual, adjustment ⇒
+    manual or the reversal of a cancellation); (product_id, filial_id) is the product's own
+    store; the linked order/purchase item can't be deleted."""
 
     __tablename__ = "stock_movements"
     __table_args__ = (
@@ -182,10 +187,13 @@ class StockMovement(Base):
     )
     resulting_qty: Mapped[int]
     order_item_id: Mapped[int | None] = mapped_column(
-        ForeignKey("order_items.id", ondelete="SET NULL"), default=None
+        ForeignKey("order_items.id", ondelete="RESTRICT"), default=None
     )
     # set for a received purchase (reason 'purchase') or its cancellation — migration 0015
     purchase_item_id: Mapped[int | None] = mapped_column(
-        ForeignKey("purchase_items.id", ondelete="SET NULL"), default=None
+        ForeignKey("purchase_items.id", ondelete="RESTRICT"), default=None
     )
+    # who moved the stock (migration 0016) — stamped automatically from the request's user
+    # (app/core/audit.py), so no write path can forget it
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), default=None)
     occurred_at: Mapped[datetime] = mapped_column(server_default=func.now())

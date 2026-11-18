@@ -85,7 +85,7 @@ class ProductCost(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="RESTRICT"))
     cost_value: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     # when the current cost is from: a manual PUT stamps now; a received purchase stamps when
     # the purchase happened — an older purchase never overwrites a newer cost (migration 0015)
@@ -112,7 +112,7 @@ class Price(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="RESTRICT"))
     filial_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
     price_default: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     # 0 = no offer — never NULL since migration 0004 (team convention for price/cost values)
@@ -133,7 +133,7 @@ class Stock(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="RESTRICT"))
     filial_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
     quantity: Mapped[int] = mapped_column(default=0)
     # onupdate: the incremental /sync/pull finds changed stock by this column — without it

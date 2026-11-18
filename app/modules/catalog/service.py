@@ -416,7 +416,14 @@ def set_price(
         end_date=end_date,
     )
     db.add(new_price)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:  # ex_prices_no_overlap (migration 0016): e.g. a future price already set
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This price period overlaps another price of the product (check prices with a future start)",
+        ) from exc
     db.refresh(new_price)
     return new_price
 
