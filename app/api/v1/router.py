@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.modules.agent.router import router as agent_router
 from app.modules.analytics.router import router as analytics_router
 from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
@@ -32,3 +33,4 @@ router.include_router(forecasts_router, prefix="/forecasts", tags=["forecasts"])
 router.include_router(analytics_router, prefix="/analytics", tags=["analytics"])
 router.include_router(audit_router, prefix="/audit-logs", tags=["audit"])
 router.include_router(chat_router, prefix="/chat", tags=["chat"])
+router.include_router(agent_router, prefix="/agent", tags=["agent"])

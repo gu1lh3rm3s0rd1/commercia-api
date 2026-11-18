@@ -17,11 +17,20 @@ class ToolUsed(BaseModel):
     ok: bool  # False when the tool answered with an error the model had to handle
 
 
+class PendingAction(BaseModel):
+    id: int
+    action: str
+    summary: str  # exactly what runs if the user answers "sim"
+    expires_at: datetime
+
+
 class ChatResponse(BaseModel):
     conversation_id: int
     answer: str
     tools_used: list[ToolUsed]
     created_at: datetime
+    # Fase 12: an action the agent proposed, waiting for "sim" / "não" in the next message (no buttons)
+    pending_action: PendingAction | None = None
 
 
 class ConversationRead(BaseModel):

@@ -76,3 +76,13 @@ def test_orchestrator_gives_up_after_max_rounds():
     result = orchestrator.answer(provider, _NoDbContext(), "sys", [], "pergunta")
     assert result.text == orchestrator.FALLBACK
     assert len(result.tool_runs) == orchestrator.MAX_ROUNDS
+
+def test_only_a_clear_yes_runs_a_proposed_action():
+    from app.modules.chat.service import classify_answer
+
+    for yes in ("sim", "Sim!", " SIM ", "s", "pode", "pode sim", "ok", "confirmo", "faça"):
+        assert classify_answer(yes) == "yes", yes
+    for no in ("não", "nao", "N", "cancela", "deixa"):
+        assert classify_answer(no) == "no", no
+    for other in ("sim, mas só 10%", "e o preço?", "talvez", "simples", "ok, e quanto vendi hoje?"):
+        assert classify_answer(other) is None, other

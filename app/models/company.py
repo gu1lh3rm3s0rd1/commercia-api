@@ -5,6 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from app.db.base import Base
+from app.models.enums import SubscriptionPlan, pg_enum
 
 
 class Company(Base):
@@ -18,4 +19,7 @@ class Company(Base):
     corporate_name: Mapped[str] = mapped_column(String(160))
     fantasy_name: Mapped[str | None] = mapped_column(String(160))
     cnpj: Mapped[str] = mapped_column(String(14), unique=True)
+    # subscription plan (migration 0018): Hulk unlocks the Assistente IA — app/core/plans.py
+    plan: Mapped[SubscriptionPlan] = mapped_column(pg_enum(SubscriptionPlan, "subscription_plan"),
+                                                   default=SubscriptionPlan.PRO)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

@@ -15,17 +15,18 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.ai import formatting as fmt
 from app.ai.periods import CompareWith, PeriodError, PeriodName, comparison, resolve
 from app.ai.providers.base import ToolCall, ToolSpec
 from app.analytics import queries as aq
-from app.core.timezone import local_today
+from app.core.timezone import local_day_bounds, local_today
 from app.forecasting import evaluation
 from app.forecasting import queries as fq
 from app.models.catalog import Category, Department, Product
@@ -43,11 +44,16 @@ class ToolError(Exception):
 class ToolContext:
     db: Session
     user: User
-    stores: dict[int, str]  # every store the user can access: id -> name
+    stores: dict[int, str]  # the user's stores the assistant may see (Hulk plan): id -> name
+    outside_plan: dict[int, str] | None = None  # the user's other stores (plan without the Assistente IA)
+    proposal: tuple | None = None  # (action name, Prepared) — set by a propose_* tool, one per answer
 
     def store(self, filial_id: int | None) -> int:
         """One store for a per-store tool."""
         if filial_id is not None:
+            if self.outside_plan and filial_id in self.outside_plan:
+                raise ToolError(f"A loja {self.outside_plan[filial_id]} está no plano Pro: o Assistente IA "
+                                "só acessa lojas do plano Hulk.")
             if filial_id not in self.stores:
                 raise ToolError(f"A loja {filial_id} não está entre as lojas deste usuário: {self._list()}.")
             return filial_id
@@ -175,7 +181,7 @@ def get_sales_summary(ctx: ToolContext, a: SalesSummaryArgs) -> dict:
         "descontos_concedidos": fmt.money(r.total_discount),
         "ticket_medio": fmt.money(r.average_ticket),
         "pedidos_cancelados": r.cancelled_orders,
-        "taxa_cancelamento": fmt.share(r.cancellation_rate),
+        "taxa_cancelamento": fmt.share(r.cancellation_rate / 100),  # the dashboard gives it in percent points
         "por_forma_pagamento": [
             {"forma": PAYMENT_NAMES.get(p.payment_method.value, p.payment_method.value), "pedidos": p.count,
              "total": fmt.money(p.total)} for p in r.by_payment_method
@@ -410,6 +416,199 @@ def get_data_status(ctx: ToolContext, a: StatusArgs) -> dict:
             "obs": "Vendas de hoje aparecem só nas ferramentas ao vivo (get_today, get_sales_summary)."}
 
 
+
+
+# ---------------------------------------------------------------------
+# consultant tools (Fase 12, Etapa C): more data for strategies, and proposing ONE action
+# ---------------------------------------------------------------------
+
+
+class AlertsArgs(_Args):
+    status: Literal["new", "seen", "dismissed"] = "new"
+    filial_id: int | None = Field(None, description="Id da loja; omita para todas as lojas do usuário.")
+
+
+def get_alerts(ctx: ToolContext, a: AlertsArgs) -> dict:
+    from app.models.agent import AgentAlert  # local: avoids a models import cycle at startup
+
+    filiais = ctx.stores_or_all(a.filial_id)
+    rows = ctx.db.execute(select(AgentAlert).where(AgentAlert.filial_id.in_(filiais), AgentAlert.status == a.status)
+                          .order_by(AgentAlert.reference_date.desc(), AgentAlert.id.desc()).limit(15)).scalars().all()
+    return {"lojas": ctx.scope_label(filiais), "alertas": [
+        {"id": r.id, "dia": fmt.day(r.reference_date), "gravidade": r.severity, "titulo": r.title, "detalhe": r.message,
+         "produto_id": r.entity_id if r.entity_type == "product" else None} for r in rows
+    ], "obs": None if rows else "Nenhum alerta com esse status."}
+
+
+class RestockArgs(_Args):
+    days: int = Field(7, ge=1, le=30, description="Lista produtos cujo estoque dura menos que isto")
+    filial_id: int | None = StoreArg
+
+
+def get_restock_suggestions(ctx: ToolContext, a: RestockArgs) -> dict:
+    import math
+
+    filial = ctx.store(a.filial_id)
+    run = fq.pick_run(ctx.db, filial, "quantity", None)
+    if run is None:
+        raise ToolError("Ainda não há previsão gerada para esta loja.")
+    start = local_today()
+    rows = ctx.db.execute(text("""
+        SELECT p.id, p.name, COALESCE(s.quantity, 0) AS stock, avg(fc.predicted) AS daily, COALESCE(c.cost_value, 0) AS cost
+        FROM products p LEFT JOIN stocks s ON s.product_id = p.id LEFT JOIN product_costs c ON c.product_id = p.id
+        JOIN forecasting.forecasts fc ON fc.run_id = :r AND fc.level = 'product' AND fc.entity_id = p.id
+             AND fc.target_date BETWEEN :a AND :b
+        WHERE p.filial_id = :f AND p.status = 'active'
+        GROUP BY p.id, p.name, s.quantity, c.cost_value HAVING avg(fc.predicted) >= 0.5
+    """), {"r": run["id"], "a": start, "b": start + timedelta(days=6), "f": filial}).mappings().all()
+    short = sorted(((Decimal(r["stock"]) / Decimal(r["daily"]), r) for r in rows), key=lambda x: x[0])
+    items = []
+    for cover, r in short:
+        if cover >= a.days:
+            break
+        buy = max(0, math.ceil(Decimal(r["daily"]) * 14 - r["stock"]))
+        items.append({"produto_id": r["id"], "produto": r["name"], "estoque": r["stock"],
+                      "demanda_prevista_dia": fmt.qty(round(Decimal(r["daily"]), 1)),
+                      "dura_dias": fmt.qty(round(cover, 1)), "comprar_para_14_dias": buy,
+                      "custo_estimado": fmt.money(Decimal(r["cost"]) * buy)})
+    return {"loja": ctx.stores[filial], "estoque_que_dura_menos_de_dias": a.days, "produtos": items[:20],
+            "obs": "Demanda pela previsão dos próximos 7 dias." if items else "Nenhum produto com estoque curto."}
+
+
+class MarginArgs(_PeriodArgs):
+    filial_id: int | None = Field(None, description="Id da loja; omita para todas as lojas do usuário.")
+
+
+def get_margin(ctx: ToolContext, a: MarginArgs) -> dict:
+    start, end = a.dates()
+    filiais = ctx.stores_or_all(a.filial_id)
+    summary = dashboard.get_margin_summary(ctx.db, filiais, start, end)
+    items, _ = dashboard.get_margin_by_product(ctx.db, filiais, start, end, 200, 0)
+    worst = sorted((i for i in items if i.revenue > 0), key=lambda i: i.margin_pct)[:8]
+    return {"lojas": ctx.scope_label(filiais), "periodo": fmt.period(start, end),
+            "faturamento": fmt.money(summary.total_revenue), "custo": fmt.money(summary.total_cost),
+            "margem": fmt.money(summary.gross_margin),
+            "margem_pct": fmt.share(summary.margin_pct / 100),  # the dashboard gives margins in percent points
+            "produtos_com_menor_margem": [
+                {"produto_id": i.product_id, "produto": i.name, "vendidos": i.quantity_sold, "faturamento": fmt.money(i.revenue),
+                 "margem": fmt.money(i.margin), "margem_pct": fmt.share(i.margin_pct / 100)} for i in worst]}
+
+
+class TopClientsArgs(_PeriodArgs):
+    limit: int = Field(10, ge=1, le=20)
+    filial_id: int | None = Field(None, description="Id da loja; omita para todas as lojas do usuário.")
+
+
+def get_top_clients(ctx: ToolContext, a: TopClientsArgs) -> dict:
+    start, end = a.dates()
+    filiais = ctx.stores_or_all(a.filial_id)
+    items, total = dashboard.get_sales_by_client(ctx.db, filiais, start, end, a.limit, 0)
+    return {"lojas": ctx.scope_label(filiais), "periodo": fmt.period(start, end), "clientes_que_compraram": total,
+            "melhores_clientes": [{"cliente": i.client_name, "pedidos": i.total_orders, "faturamento": fmt.money(i.total_revenue),
+                                   "ticket_medio": fmt.money(i.average_ticket)} for i in items]}
+
+
+class InactiveClientsArgs(_Args):
+    days: int = Field(60, ge=7, le=365, description="Sem comprar há pelo menos tantos dias")
+    filial_id: int | None = Field(None, description="Id da loja; omita para todas as lojas do usuário.")
+
+
+def get_inactive_clients(ctx: ToolContext, a: InactiveClientsArgs) -> dict:
+    filiais = ctx.stores_or_all(a.filial_id)
+    items, total = dashboard.get_inactive_clients(ctx.db, filiais, a.days, 15, 0)
+    return {"lojas": ctx.scope_label(filiais), "sem_comprar_ha_dias": a.days, "total_de_clientes": total,
+            "clientes": [{"cliente": i.client_name, "ultima_compra": fmt.day(i.last_order_at),
+                          "dias_sem_comprar": i.days_since_last_order} for i in items],
+            "obs": "Só os 15 primeiros; nunca compraram aparecem primeiro." if total > 15 else None}
+
+
+class PurchasesArgs(_PeriodArgs):
+    filial_id: int | None = Field(None, description="Id da loja; omita para todas as lojas do usuário.")
+
+
+def get_purchases_summary(ctx: ToolContext, a: PurchasesArgs) -> dict:
+    start, end = a.dates()
+    filiais = ctx.stores_or_all(a.filial_id)
+    s, e = local_day_bounds(start)[0], local_day_bounds(end)[1]
+    rows = ctx.db.execute(text("""
+        SELECT COALESCE(x.trade_name, x.corporate_name, x.first_name || ' ' || x.last_name) AS supplier,
+               count(*) AS purchases, sum(p.total) AS total, count(*) FILTER (WHERE p.status = 'pending') AS pending
+        FROM purchases p JOIN people x ON x.id = p.supplier_id
+        WHERE p.filial_id = ANY(:f) AND p.status <> 'cancelled'
+          AND COALESCE(p.occurred_at, p.created_at) >= :s AND COALESCE(p.occurred_at, p.created_at) < :e
+        GROUP BY 1 ORDER BY sum(p.total) DESC LIMIT 15
+    """), {"f": list(filiais), "s": s, "e": e}).mappings().all()
+    return {"lojas": ctx.scope_label(filiais), "periodo": fmt.period(start, end), "por_fornecedor": [
+        {"fornecedor": r["supplier"], "compras": r["purchases"], "pendentes": r["pending"], "total": fmt.money(r["total"])}
+        for r in rows], "obs": None if rows else "Nenhuma compra no período."}
+
+
+class PatternsArgs(_PeriodArgs):
+    filial_id: int | None = Field(None, description="Id da loja; omita para todas as lojas do usuário.")
+
+
+def get_sales_patterns(ctx: ToolContext, a: PatternsArgs) -> dict:
+    start, end = a.dates()
+    filiais = ctx.stores_or_all(a.filial_id)
+    weekdays = dashboard.get_sales_by_weekday(ctx.db, filiais, start, end)
+    hours = [h for h in dashboard.get_sales_by_hour(ctx.db, filiais, start, end) if h.count]
+    total = sum((w.total for w in weekdays), Decimal("0"))
+    return {"lojas": ctx.scope_label(filiais), "periodo": fmt.period(start, end),
+            "por_dia_da_semana": [{"dia": w.weekday_name, "pedidos": w.count, "faturamento": fmt.money(w.total),
+                                   "participacao": fmt.share(w.total / total) if total else None,
+                                   "ticket_medio": fmt.money(w.total / w.count) if w.count else None} for w in weekdays],
+            "horas_de_maior_movimento": [{"hora": f"{h.hour:02d}h", "pedidos": h.count, "faturamento": fmt.money(h.total)}
+                                         for h in sorted(hours, key=lambda h: h.total, reverse=True)[:5]]}
+
+
+class ProductInfoArgs(_Args):
+    product_id: int = Field(description="Id vindo de find_entities")
+
+
+def get_product_info(ctx: ToolContext, a: ProductInfoArgs) -> dict:
+    product = ctx.db.get(Product, a.product_id)
+    if product is None or product.filial_id not in ctx.stores:
+        raise ToolError("Produto não encontrado nas lojas do usuário.")
+    from app.modules.catalog import service as catalog  # local: catalog imports nothing from here
+
+    price = catalog.get_current_price(ctx.db, product.id)
+    cost = catalog.get_product_cost(ctx.db, product.id)
+    stock = catalog.get_stock(ctx.db, product)
+    sold = ctx.db.execute(text("""SELECT COALESCE(sum(quantity), 0), COALESCE(sum(revenue), 0) FROM analytics.daily_sales
+                                  WHERE product_id = :p AND sale_date >= :d"""),
+                          {"p": product.id, "d": local_today() - timedelta(days=30)}).one()
+    selling = None
+    if price is not None:
+        selling = price.price_offer if price.price_offer > 0 else price.price_default
+    cost_value = cost.cost_value if cost else Decimal("0")
+    return {"produto_id": product.id, "produto": product.name, "loja": ctx.stores[product.filial_id],
+            "ativo": product.status.value == "active",
+            "preco_normal": fmt.money(price.price_default) if price else None,
+            "oferta": fmt.money(price.price_offer) if price and price.price_offer > 0 else None,
+            "preco_vigente_ate": fmt.day(price.end_date) if price else None,
+            "custo": fmt.money(cost_value),
+            "margem_no_preco_praticado": fmt.share((selling - cost_value) / selling) if selling and cost_value else None,
+            "estoque": stock.quantity if stock else 0,
+            "vendidos_ultimos_30_dias": fmt.qty(sold[0]), "faturamento_ultimos_30_dias": fmt.money(sold[1])}
+
+
+def _proposer(action_name: str):
+    def propose(ctx: ToolContext, a) -> dict:
+        from app.agent import actions  # local: the actions module imports this one's services
+
+        if ctx.proposal is not None:
+            raise ToolError("Já existe uma proposta nesta resposta: uma ação por vez.")
+        try:
+            prepared = actions.prepare(ctx.db, ctx.user, set(ctx.stores), action_name, a.model_dump(mode="json"))
+        except actions.ActionError as exc:
+            raise ToolError(str(exc)) from exc
+        ctx.proposal = (action_name, prepared)
+        return {"proposta": prepared.summary,
+                "instrucao": "Apresente a proposta ao usuário com esse texto e termine perguntando: "
+                             "'Posso fazer isso? Responda sim ou não.' Nada foi feito ainda."}
+    return propose
+
+
 # ---------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------
@@ -451,30 +650,67 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
     Tool("get_forecast_accuracy", "O quanto as previsões costumam errar (avaliação retroativa).", AccuracyArgs,
          get_forecast_accuracy),
     Tool("get_data_status", "Até que dia vão os dados das análises e das previsões.", StatusArgs, get_data_status),
+    # consultant (Fase 12)
+    Tool("get_alerts", "Alertas do agente (vendas fora do esperado, ruptura, produto parado, venda abaixo do custo, "
+         "cancelamentos). Use para 'o que preciso saber hoje?'.", AlertsArgs, get_alerts),
+    Tool("get_restock_suggestions", "Produtos cujo estoque dura poucos dias pela previsão, com quanto comprar para 14 dias.",
+         RestockArgs, get_restock_suggestions),
+    Tool("get_margin", "Margem da loja no período e os produtos com menor margem.", MarginArgs, get_margin),
+    Tool("get_top_clients", "Melhores clientes do período (pedidos, faturamento, ticket médio).", TopClientsArgs, get_top_clients),
+    Tool("get_inactive_clients", "Clientes que não compram há N dias (para ações de reativação).", InactiveClientsArgs,
+         get_inactive_clients),
+    Tool("get_purchases_summary", "Compras por fornecedor no período.", PurchasesArgs, get_purchases_summary),
+    Tool("get_sales_patterns", "Vendas por dia da semana e horários de maior movimento, com ticket médio.", PatternsArgs,
+         get_sales_patterns),
+    Tool("get_product_info", "Preço, oferta, custo, margem, estoque e vendas dos últimos 30 dias de um produto. Use antes de "
+         "propor oferta ou preço.", ProductInfoArgs, get_product_info),
 ]}
 
 
+def _register_proposals() -> None:
+    """One propose_<action> tool per executable action (app/agent/actions.py): typed params,
+    so the model fills them like any other tool. Proposing runs nothing."""
+    from app.agent.actions import ACTIONS
+
+    for name, action in ACTIONS.items():
+        TOOLS[f"propose_{name}"] = Tool(
+            f"propose_{name}",
+            f"PROPÕE (não executa) {action.label}. O sistema mostra o resumo exato e só executa se o usuário responder "
+            "'sim'. Uma proposta por resposta.",
+            action.params, _proposer(name))
+
+
+_register_proposals()
+
+
 def _clean_schema(schema: dict) -> dict:
-    """Pydantic JSON schema → the plain subset function-calling APIs handle well: no
-    titles, `X | None` collapsed to X (optional = not in `required`), dates as strings."""
+    """Pydantic JSON schema → the plain subset function-calling APIs handle well: no titles,
+    no $ref/$defs (inlined), `X | None` collapsed to X (optional = not in `required`), money
+    (Decimal: number-or-string) as a number, dates as strings."""
+    defs = schema.get("$defs", {})
+
     def clean(node):
-        if isinstance(node, dict):
-            node = {k: clean(v) for k, v in node.items() if k != "title"}
-            any_of = node.get("anyOf")
-            if any_of and len(any_of) == 2 and {"type": "null"} in any_of:
-                rest = next(x for x in any_of if x != {"type": "null"})
-                node = {**{k: v for k, v in node.items() if k != "anyOf"}, **rest}
-                if node.get("default") is None:
-                    node.pop("default", None)
-            if node.get("format") == "date":
-                node["description"] = (node.get("description", "") + " (AAAA-MM-DD)").strip()
-            return node
         if isinstance(node, list):
             return [clean(x) for x in node]
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            node = {**defs[node["$ref"].split("/")[-1]], **{k: v for k, v in node.items() if k != "$ref"}}
+        node = {k: clean(v) for k, v in node.items() if k not in ("title", "$defs", "additionalProperties")}
+        any_of = node.get("anyOf")
+        if any_of:
+            options = [x for x in any_of if x != {"type": "null"}]
+            numeric = [x for x in options if x.get("type") == "number"]
+            if len(options) == 1 or (numeric and all(x.get("type") in ("number", "string") for x in options)):
+                chosen = numeric[0] if numeric else options[0]  # Decimal → number (the string form is only for parsing)
+                node = {**{k: v for k, v in node.items() if k != "anyOf"}, **chosen}
+                if node.get("default") is None:
+                    node.pop("default", None)
+        if node.get("format") == "date" and "AAAA-MM-DD" not in node.get("description", ""):
+            node["description"] = (node.get("description", "") + " (AAAA-MM-DD)").strip()
         return node
-    out = clean(schema)
-    out.pop("additionalProperties", None)
-    return out
+
+    return clean(schema)
 
 
 def specs() -> list[ToolSpec]:

@@ -7,6 +7,8 @@ permanent process. From the project root (or inside the api container):
     python -m app.workers.cli forecast run [--model M ...] [--target T ...] [--horizon 14] [--train-end YYYY-MM-DD]
     python -m app.workers.cli forecast backtest [--origins 12] [--step-days 7] [--horizon 14]
     python -m app.workers.cli forecast evaluate [--level filial] [--filial-id N]
+    python -m app.workers.cli agent detect [--day YYYY-MM-DD] [--filial-id N]
+    python -m app.workers.cli agent summary [--filial-id N]
 
 Exit code is non-zero on failure (and on any failed verify check), so cron/CI can tell.
 """
@@ -57,6 +59,37 @@ def _evaluate(args, started: float) -> int:
     return 0
 
 
+def _agent(args, started: float) -> int:
+    from app.agent import service as agent  # imported here: only this command needs it
+    from app.ai.providers import get_provider
+    from app.ai.providers.base import LLMUnavailable
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        stores = agent.hulk_stores(db, args.filial_id)
+        if args.command == "detect":
+            for filial_id in stores:
+                created = agent.detect(db, filial_id, args.day)
+                print(f"agent detect: filial {filial_id} - {len(created)} new alert(s)")
+                for a in created:
+                    print(f"  [{a.severity}] {a.title}")
+        else:
+            try:
+                provider = get_provider()
+            except LLMUnavailable:
+                provider = None
+            for filial_id in stores:
+                s = agent.weekly_summary(db, filial_id, provider)
+                print(f"agent summary: filial {filial_id} - week {s.week_start}..{s.week_end} ({s.generated_by})")
+        if not stores:
+            print("agent: no store on the Hulk plan")
+    finally:
+        db.close()
+    print(f"({time.monotonic() - started:.1f}s)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.workers.cli")
     groups = parser.add_subparsers(dest="group", required=True)
@@ -85,8 +118,19 @@ def main(argv: list[str] | None = None) -> int:
     evaluate.add_argument("--level", default="filial", choices=["product", "category", "department", "filial"])
     evaluate.add_argument("--filial-id", type=int, action="append", help="repeatable; default: every evaluated filial")
 
+    agent = groups.add_parser("agent", help="AI agent (Fase 12): alerts and weekly summary, Hulk stores only")
+    agent_commands = agent.add_subparsers(dest="command", required=True)
+    detect = agent_commands.add_parser("detect", help="run the detectors for a day (default: yesterday)")
+    detect.add_argument("--day", type=date.fromisoformat)
+    detect.add_argument("--filial-id", type=int, action="append", help="repeatable; default: every Hulk store")
+    summary = agent_commands.add_parser("summary", help="write the last week's summary")
+    summary.add_argument("--filial-id", type=int, action="append", help="repeatable; default: every Hulk store")
+
     args = parser.parse_args(argv)
     started = time.monotonic()
+
+    if args.group == "agent":
+        return _agent(args, started)
 
     if args.group == "forecast" and args.command == "evaluate":
         return _evaluate(args, started)

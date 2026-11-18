@@ -102,7 +102,7 @@ class GeminiProvider:
             tools=[types.Tool(function_declarations=[
                 types.FunctionDeclaration(name=t.name, description=t.description, parameters_json_schema=t.parameters)
                 for t in tools
-            ])],
+            ])] if tools else None,  # a plain generation (e.g. the agent's weekly summary) has no tools
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         contents = [

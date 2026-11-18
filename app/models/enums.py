@@ -8,6 +8,13 @@ class RecordStatus(str, enum.Enum):
     INACTIVE = "inactive"
 
 
+class SubscriptionPlan(str, enum.Enum):
+    """Per store (migration 0018); what each unlocks: app/core/plans.py."""
+
+    PRO = "pro"
+    HULK = "hulk"
+
+
 class PersonType(str, enum.Enum):
     INDIVIDUAL = "individual"  # pessoa física — CPF
     COMPANY = "company"  # pessoa jurídica — CNPJ

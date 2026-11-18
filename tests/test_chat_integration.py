@@ -188,6 +188,8 @@ def test_the_model_cannot_reach_another_store(client, admin_headers, fake):
 
 def test_an_owner_of_two_stores_sees_both(client, admin_headers, fake):
     main, other = _filial(client, admin_headers), _other_store()
+    with engine.begin() as conn:  # the assistant only sees Hulk stores (Fase 12)
+        conn.execute(text("UPDATE companies SET plan = 'hulk' WHERE id = :o"), {"o": other})
     h = _user(client, admin_headers, [main, other], profile="Administrador")
     seen = {}
 

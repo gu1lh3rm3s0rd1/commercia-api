@@ -15,6 +15,7 @@ from app.core.roles import GROUPS, PERMISSIONS
 from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models.company import Company
+from app.models.enums import SubscriptionPlan
 from app.models.user import Group, GroupPermission, Permission, User, UserCompany, UserGroup
 
 DEMO_FILIAL_CODE = "MATRIZ"
@@ -33,6 +34,7 @@ def seed() -> None:
                 filial_code=DEMO_FILIAL_CODE,
                 corporate_name="Commercia Demo LTDA",
                 cnpj="00000000000100",
+                plan=SubscriptionPlan.HULK,  # the demo store shows everything, Assistente IA included
             )
             db.add(company)
             db.flush()

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.ai.providers.base import LLMUnavailable
+from app.core.plans import FEATURE_LABELS, PlanRequired
 from app.api.v1.router import router as v1_router
 from app.core.config import get_settings
 
@@ -25,6 +26,16 @@ _UNAVAILABLE = {
     "rate_limited": "O assistente atingiu o limite de uso no momento. Tente de novo em alguns minutos.",
     "unavailable": "O assistente está indisponível no momento. Tente de novo em instantes.",
 }
+
+
+@app.exception_handler(PlanRequired)
+async def plan_required(_request: Request, exc: PlanRequired) -> JSONResponse:
+    """UC012, alternative flow a: the store's plan doesn't include the feature."""
+    label = FEATURE_LABELS.get(exc.feature, exc.feature)
+    return JSONResponse(status_code=403, content={
+        "detail": f"Plano insuficiente: {label} faz parte do plano {exc.plan.value.capitalize()}.",
+        "feature": exc.feature, "required_plan": exc.plan.value,
+    })
 
 
 @app.exception_handler(LLMUnavailable)

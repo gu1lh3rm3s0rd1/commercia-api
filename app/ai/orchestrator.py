@@ -30,6 +30,7 @@ class Answer:
     tool_runs: list[ToolRun] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    pending: Any = None  # the AgentAction proposed in this answer, if any (Fase 12)
 
 
 def answer(provider: LLMProvider, ctx: tools.ToolContext, system: str,
