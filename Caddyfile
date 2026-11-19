@@ -1,8 +1,11 @@
-# Variante rápida — sem domínio, só HTTP. Serve pra publicar hoje e o time já
-# conseguir integrar via http://<ip-público-da-vm>. Trocar pela variante HTTPS
-# (ver Caddyfile.https-example) assim que tiver um domínio/subdomínio apontado
-# pro IP da VM — a API troca login/senha/token, HTTP puro não é pra ficar
-# valendo por muito tempo.
-:80 {
+# HTTPS com certificado automático (Let's Encrypt) para o domínio — RNF03 (2026-11-18).
+# O Caddy obtém e renova o certificado sozinho; HTTP no domínio redireciona para HTTPS.
+commercia.duckdns.org {
+    reverse_proxy api:8000
+}
+
+# transição: o acesso antigo por IP continua (HTTP) até app e painel migrarem; depois, apagar
+# este bloco e rodar `docker compose restart caddy`.
+http://168.75.100.157 {
     reverse_proxy api:8000
 }
