@@ -6,7 +6,8 @@ __pycache__/
 *.egg-info/
 
 
-*.mdeval_chat_results*.json
+eval_chat_results*.json
 *.md 
+!app/ai/ajuda.md
 
 docs/*
